@@ -73,7 +73,7 @@ func NewSafeClient(timeout time.Duration) *http.Client {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          64,

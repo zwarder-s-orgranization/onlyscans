@@ -4,6 +4,7 @@ package secretclient
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -12,6 +13,25 @@ import (
 	secflowv1 "github.com/secflow/secflow/packages/proto/gen/go/secflow/v1"
 	"github.com/secflow/secflow/services/internal/obs"
 )
+
+var (
+	connsMu sync.Mutex
+	conns   = map[string]*grpc.ClientConn{}
+)
+
+func getConn(addr string) (*grpc.ClientConn, error) {
+	connsMu.Lock()
+	defer connsMu.Unlock()
+	if c, ok := conns[addr]; ok && c != nil {
+		return c, nil
+	}
+	c, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()), obs.GRPCDialOption())
+	if err != nil {
+		return nil, fmt.Errorf("dial secret service %s: %w", addr, err)
+	}
+	conns[addr] = c
+	return c, nil
+}
 
 // ResolveNodeSecret fetches a plaintext secret bound to the leased NodeTask.
 func ResolveNodeSecret(ctx context.Context, addr string, task *secflowv1.NodeTask, secretRef string) (string, error) {
@@ -76,12 +96,11 @@ func ResolveMCPDiscoverySecret(ctx context.Context, addr, serviceToken, connecti
 }
 
 func resolve(ctx context.Context, addr string, req *secflowv1.ResolveScopedSecretRequest) (string, error) {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()), obs.GRPCDialOption())
+	conn, err := getConn(addr)
 	if err != nil {
-		return "", fmt.Errorf("dial secret service %s: %w", addr, err)
+		return "", err
 	}
-	defer conn.Close()
-	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	resp, err := secflowv1.NewSecretServiceClient(conn).ResolveScopedSecret(reqCtx, req)
 	if err != nil {

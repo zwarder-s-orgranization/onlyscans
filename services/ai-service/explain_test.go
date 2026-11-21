@@ -530,3 +530,20 @@ func TestChatCompletionsURL_NormalizesEmptyPath(t *testing.T) {
 		}
 	}
 }
+
+func TestRedactSensitive_PreservesEndpointURLPaths(t *testing.T) {
+	t.Parallel()
+	msg := `call llm endpoint: Post "https://llm.skbkit.ru/api/v1/chat/completions": dial tcp 46.148.231.57:443: i/o timeout`
+	got := redactSensitive(msg)
+	if got != msg {
+		t.Fatalf("redactSensitive mangled endpoint URL:\ngot:  %q\nwant: %q", got, msg)
+	}
+	withSecret := `Authorization: Bearer sk-or-v1-abc123def456ghi789jkl012mno345 on https://llm.skbkit.ru/v1/chat/completions`
+	gotSecret := redactSensitive(withSecret)
+	if strings.Contains(gotSecret, "sk-or-v1") {
+		t.Fatalf("expected secret to be redacted: %q", gotSecret)
+	}
+	if !strings.Contains(gotSecret, "https://llm.skbkit.ru/v1/chat/completions") {
+		t.Fatalf("expected URL to remain intact: %q", gotSecret)
+	}
+}

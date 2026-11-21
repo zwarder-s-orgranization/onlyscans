@@ -1284,6 +1284,11 @@ func looksLikeHighEntropySecret(tok string) bool {
 	if !hasDigit {
 		return false
 	}
+	// Avoid false positives on lowercase URL paths like "ru/api/v1/chat/completions"
+	// where "/" and "v1" satisfy 3 character classes without being a secret token.
+	if strings.Count(tok, "/") >= 2 && !hasUpper && !strings.ContainsAny(tok, "+=") {
+		return false
+	}
 	classes := 0
 	for _, ok := range []bool{hasLower, hasUpper, hasDigit, hasSymbol} {
 		if ok {

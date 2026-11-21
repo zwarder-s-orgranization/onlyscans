@@ -96,6 +96,13 @@ func (a *aiSvc) handleExplainTask(taskCtx context.Context, orchAddr string, task
 		}
 		plain, err := secretclient.ResolveNodeSecret(taskCtx, orchAddr, task, b.GetSecretRef())
 		if err != nil {
+			slog.WarnContext(taskCtx, "resolve llmApiKey secret failed",
+				"run_id", task.GetRunId(),
+				"node_id", task.GetNodeId(),
+				"secret_ref", b.GetSecretRef(),
+				"orch_addr", orchAddr,
+				"err", err,
+			)
 			return &secflowv1.NodeResult{
 				NodeRunId:         task.GetNodeRunId(),
 				RunId:             task.GetRunId(),
@@ -103,7 +110,7 @@ func (a *aiSvc) handleExplainTask(taskCtx context.Context, orchAddr string, task
 				PluginId:          "ai.explain",
 				Status:            secflowv1.NodeRunStatus_NODE_RUN_STATUS_FAILED,
 				ErrorCode:         "SECRET_SCOPE_DENIED",
-				ErrorMessage:      "llmApiKey secret unavailable",
+				ErrorMessage:      "llmApiKey secret unavailable: " + redactSensitive(err.Error()),
 				ActiveOutputPorts: []string{"default"},
 			}
 		}

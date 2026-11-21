@@ -185,10 +185,12 @@ func (s *Server) ResolveScopedSecret(ctx context.Context, req *secflowv1.Resolve
 	}
 	s.secMu.Unlock()
 	if !ok {
+		slog.Warn("resolve scoped secret: not found in registry", "secret_ref", req.GetSecretRef())
 		return nil, status.Error(codes.NotFound, "secret not found")
 	}
 	st, err := s.secretStore()
 	if err != nil {
+		slog.Warn("resolve scoped secret: store unavailable", "secret_ref", req.GetSecretRef(), "err", err)
 		return nil, status.Error(codes.Internal, "secret store unavailable")
 	}
 	plain, err := st.Get(ctx, req.GetSecretRef())
@@ -196,6 +198,7 @@ func (s *Server) ResolveScopedSecret(ctx context.Context, req *secflowv1.Resolve
 		plain, err = secretbox.Open(s.boxKey, sealed)
 	}
 	if err != nil {
+		slog.Warn("resolve scoped secret: decrypt/get failed", "secret_ref", req.GetSecretRef(), "err", err)
 		if errors.Is(err, secretbox.ErrNotFound) {
 			return nil, status.Error(codes.NotFound, "secret not found")
 		}
@@ -315,13 +318,16 @@ func (s *Server) authorizeSecret(req *secflowv1.ResolveScopedSecretRequest) erro
 	case *secflowv1.ResolveScopedSecretRequest_NodeTask:
 		n := scope.NodeTask
 		if n == nil || strings.HasPrefix(n.GetPluginId(), "scan.") || strings.HasPrefix(n.GetPluginId(), "sbom.") {
+			slog.Warn("secret scope denied: forbidden plugin", "plugin_id", n.GetPluginId(), "secret_ref", req.GetSecretRef())
 			return status.Error(codes.PermissionDenied, "SECRET_SCOPE_DENIED")
 		}
 		if err := lease.Verify(s.leaseKey, n.GetTaskLeaseToken(), n.GetRunId(), n.GetNodeRunId(), n.GetNodeId(), n.GetPluginId()); err != nil {
+			slog.Warn("secret scope denied: lease verify failed", "run_id", n.GetRunId(), "node_id", n.GetNodeId(), "plugin_id", n.GetPluginId(), "err", err)
 			return status.Error(codes.PermissionDenied, "SECRET_SCOPE_DENIED")
 		}
 		if !s.nodeHasSecret(n.GetRunId(), n.GetNodeId(), req.GetSecretRef()) {
 			if n.GetPluginId() != "mcp.tool" || !s.nodeHasMcpSecret(n.GetRunId(), n.GetNodeId(), req.GetSecretRef()) {
+				slog.Warn("secret scope denied: node does not bind secret", "run_id", n.GetRunId(), "node_id", n.GetNodeId(), "plugin_id", n.GetPluginId(), "secret_ref", req.GetSecretRef())
 				return status.Error(codes.PermissionDenied, "SECRET_SCOPE_DENIED")
 			}
 		}
