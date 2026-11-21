@@ -1,0 +1,376 @@
+name: secflow
+
+services:
+  postgres:
+    image: postgres:17.12-alpine
+    environment:
+      POSTGRES_USER: secflow
+      POSTGRES_PASSWORD: secflow
+      POSTGRES_DB: secflow
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U secflow -d secflow"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:8.10.3-alpine
+    ports:
+      - "6379:6379"
+
+  garage:
+    image: dxflrs/garage:v2.5.0
+    command: ["/garage", "-c", "/etc/garage.toml", "server"]
+    volumes:
+      - ./garage.toml:/etc/garage.toml:ro
+
+  garage-cred-init:
+    image: busybox:1.37
+    user: "0"
+    command: ["sh", "-c", "mkdir -p /var/lib/secflow && chown 65532:65532 /var/lib/secflow && chmod 755 /var/lib/secflow"]
+    volumes:
+      - secflow-garage-cred:/var/lib/secflow
+    restart: "no"
+
+  garage-init:
+    build:
+      context: ../..
+      dockerfile: services/garage-init/Dockerfile
+    environment:
+      GARAGE_ENDPOINT: http://garage:3900
+      GARAGE_ADMIN_URL: http://garage:3903
+      GARAGE_ADMIN_TOKEN: dev-admin-token
+      GARAGE_CRED_FILE: /var/lib/secflow/garage.json
+      DEFAULT_CATALOG_PATH: /mentor-training/vulnerability-database/vulnerabilities.json
+    volumes:
+      - secflow-garage-cred:/var/lib/secflow
+    depends_on:
+      garage:
+        condition: service_started
+      garage-cred-init:
+        condition: service_completed_successfully
+    restart: "no"
+
+  orchestrator:
+    build:
+      context: ../..
+      dockerfile: services/orchestrator/Dockerfile
+    environment:
+      GRPC_ADDR: ":50051"
+      HTTP_ADDR: ":8081"
+      DATABASE_URL: postgres://secflow:secflow@postgres:5432/secflow?sslmode=disable
+      SERVICE_TOKEN: dev-service-token
+      INGESTER_ADDR: source-ingester:50052
+      NOTIFY_ADDR: notify-service:50054
+      GARAGE_ENDPOINT: http://garage:3900
+      GARAGE_ADMIN_URL: http://garage:3903
+      GARAGE_ADMIN_TOKEN: dev-admin-token
+      GARAGE_CRED_FILE: /var/lib/secflow/garage.json
+      SECFLOW_PUBLIC_URL: http://localhost:3000
+      REPO_ALLOWLIST: "${REPO_ALLOWLIST:-github.com/TBagirov/training}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+    volumes:
+      - secflow-garage-cred:/var/lib/secflow
+    ports:
+      - "50051:50051"
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      garage-init:
+        condition: service_completed_successfully
+
+  source-ingester:
+    build:
+      context: ../..
+      dockerfile: services/source-ingester/Dockerfile
+    environment:
+      GRPC_ADDR: ":50052"
+      HTTP_ADDR: ":8082"
+      REPO_ALLOWLIST: "${REPO_ALLOWLIST:-github.com/TBagirov/training}"
+      ORCHESTRATOR_ADDR: orchestrator:50051
+      GARAGE_ENDPOINT: http://garage:3900
+      GARAGE_ADMIN_URL: http://garage:3903
+      GARAGE_ADMIN_TOKEN: dev-admin-token
+      GARAGE_CRED_FILE: /var/lib/secflow/garage.json
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+    volumes:
+      - secflow-garage-cred:/var/lib/secflow
+    ports:
+      - "50052:50052"
+      - "8082:8082"
+    depends_on:
+      garage-init:
+        condition: service_completed_successfully
+
+  edge-gateway:
+    build:
+      context: ../..
+      dockerfile: services/edge-gateway/Dockerfile
+    environment:
+      HTTP_ADDR: ":8080"
+      DATABASE_URL: postgres://secflow:secflow@postgres:5432/secflow?sslmode=disable
+      REDIS_ADDR: redis:6379
+      ORCHESTRATOR_ADDR: orchestrator:50051
+      INGESTER_ADDR: source-ingester:50052
+      AI_ADDR: ai-service:50053
+      NOTIFY_ADDR: notify-service:50054
+      JWT_SECRET: dev-jwt-secret-change-me
+      SERVICE_TOKEN: dev-service-token
+      RATE_LIMIT_PER_MINUTE: "120"
+      CORS_ALLOW_ORIGINS: "${CORS_ALLOW_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}"
+      GARAGE_ENDPOINT: http://garage:3900
+      GARAGE_ADMIN_URL: http://garage:3903
+      GARAGE_ADMIN_TOKEN: dev-admin-token
+      GARAGE_CRED_FILE: /var/lib/secflow/garage.json
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+    volumes:
+      - secflow-garage-cred:/var/lib/secflow
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      garage-init:
+        condition: service_completed_successfully
+      orchestrator:
+        condition: service_started
+      source-ingester:
+        condition: service_started
+      ai-service:
+        condition: service_started
+      notify-service:
+        condition: service_started
+
+  web:
+    build:
+      context: ../..
+      dockerfile: services/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8080
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      edge-gateway:
+        condition: service_started
+
+  worker-sca:
+    build:
+      context: ../..
+      dockerfile: services/worker-sca/Dockerfile
+    environment:
+      ORCHESTRATOR_ADDR: orchestrator:50051
+      GARAGE_ENDPOINT: http://garage:3900
+      GARAGE_CRED_FILE: /var/lib/secflow/garage.json
+      CATALOG_PATH: /mentor-training/vulnerability-database/vulnerabilities.json
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+    volumes:
+      - secflow-garage-cred:/var/lib/secflow:ro
+      - ../../tests/data/repos/mentor-training/vulnerability-database:/mentor-training/vulnerability-database:ro
+    depends_on:
+      garage-init:
+        condition: service_completed_successfully
+      orchestrator:
+        condition: service_started
+
+  worker-kotlin:
+    build:
+      context: ../..
+      dockerfile: services/worker-kotlin/Dockerfile
+    environment:
+      ORCHESTRATOR_ADDR: orchestrator:50051
+      GARAGE_ENDPOINT: http://garage:3900
+      GARAGE_CRED_FILE: /var/lib/secflow/garage.json
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+    volumes:
+      - secflow-garage-cred:/var/lib/secflow:ro
+    depends_on:
+      garage-init:
+        condition: service_completed_successfully
+      orchestrator:
+        condition: service_started
+
+  sbom-service:
+    build:
+      context: ../..
+      dockerfile: services/sbom-service/Dockerfile
+    environment:
+      ORCHESTRATOR_ADDR: orchestrator:50051
+      GARAGE_ENDPOINT: http://garage:3900
+      GARAGE_CRED_FILE: /var/lib/secflow/garage.json
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+    volumes:
+      - secflow-garage-cred:/var/lib/secflow:ro
+    depends_on:
+      garage-init:
+        condition: service_completed_successfully
+      orchestrator:
+        condition: service_started
+
+  ai-service:
+    build:
+      context: ../..
+      dockerfile: services/ai-service/Dockerfile
+    environment:
+      GRPC_ADDR: ":50053"
+      HTTP_ADDR: ":8086"
+      ORCHESTRATOR_ADDR: orchestrator:50051
+      AI_PROVIDER: "${AI_PROVIDER:-template_fallback}"
+      OLLAMA_URL: "${OLLAMA_URL:-http://ollama:11434}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-}"
+      LLM_BASE_URL: "${LLM_BASE_URL:-}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      LLM_MODEL: "${LLM_MODEL:-}"
+      MCP_ALLOW_PRIVATE: "${MCP_ALLOW_PRIVATE:-}"
+      DATABASE_URL: postgres://secflow:secflow@postgres:5432/secflow?sslmode=disable
+      REDIS_ADDR: redis:6379
+      GARAGE_ENDPOINT: http://garage:3900
+      GARAGE_CRED_FILE: /var/lib/secflow/garage.json
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+    volumes:
+      - secflow-garage-cred:/var/lib/secflow:ro
+    ports:
+      - "50053:50053"
+      - "8086:8086"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      garage-init:
+        condition: service_completed_successfully
+      orchestrator:
+        condition: service_started
+
+  notify-service:
+    build:
+      context: ../..
+      dockerfile: services/notify-service/Dockerfile
+    environment:
+      GRPC_ADDR: ":50054"
+      HTTP_ADDR: ":8087"
+      ORCHESTRATOR_ADDR: orchestrator:50051
+      SERVICE_TOKEN: dev-service-token
+      WEBHOOK_INSPECTOR_URL_PREFIX: http://edge-gateway:8080/webhooks/inspector/
+      SECFLOW_PUBLIC_URL: http://localhost:3000
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+    ports:
+      - "50054:50054"
+      - "8087:8087"
+    depends_on:
+      orchestrator:
+        condition: service_started
+
+  mcp-bridge:
+    build:
+      context: ../..
+      dockerfile: services/mcp-bridge/Dockerfile
+    environment:
+      HTTP_ADDR: ":8088"
+      ORCHESTRATOR_ADDR: orchestrator:50051
+      SERVICE_TOKEN: dev-service-token
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+    ports:
+      - "8088:8088"
+    depends_on:
+      orchestrator:
+        condition: service_started
+
+  demo-spring-config:
+    profiles: ["external-plugin"]
+    build:
+      context: ../..
+      dockerfile: services/demo-spring-config/Dockerfile
+    environment:
+      ORCHESTRATOR_ADDR: orchestrator:50051
+      GARAGE_ENDPOINT: http://garage:3900
+      GARAGE_CRED_FILE: /var/lib/secflow/garage.json
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+    volumes:
+      - secflow-garage-cred:/var/lib/secflow:ro
+    depends_on:
+      garage-init:
+        condition: service_completed_successfully
+      orchestrator:
+        condition: service_started
+
+  ollama:
+    image: ollama/ollama:0.40.16
+    profiles: ["local-llm"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - secflow-ollama:/root/.ollama
+
+  mailpit:
+    image: axllent/mailpit:v1.21
+    profiles: ["dev-tools"]
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    profiles: ["observability"]
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      - tempo
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    profiles: ["observability"]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--enable-feature=exemplar-storage"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  tempo:
+    image: grafana/tempo:2.7.2
+    profiles: ["observability"]
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./observability/tempo.yaml:/etc/tempo.yaml:ro
+    ports:
+      - "3200:3200"
+
+  loki:
+    image: grafana/loki:3.4.2
+    profiles: ["observability"]
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./observability/loki.yaml:/etc/loki/local-config.yaml:ro
+    ports:
+      - "3100:3100"
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    profiles: ["observability"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./observability/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+
+volumes:
+  secflow-garage-cred:
+  secflow-ollama:

@@ -1,0 +1,280 @@
+syntax = "proto3";
+
+package secflow.v1;
+
+import "google/protobuf/timestamp.proto";
+import "secflow/v1/common.proto";
+
+// RunService executes Workflow DAGs, streams durable run_events (LISTEN/NOTIFY + afterSeq replay),
+// serves immutable Run Findings / Submission Report / SBOM / AI Report, and supports Re-run from Node.
+service RunService {
+  rpc StartRun(StartRunRequest) returns (StartRunResponse);
+  rpc StartRunFromWebhook(StartRunFromWebhookRequest) returns (StartRunFromWebhookResponse);
+  rpc RerunFromNode(RerunFromNodeRequest) returns (RerunFromNodeResponse);
+  rpc CancelRun(CancelRunRequest) returns (CancelRunResponse);
+  rpc GetRun(GetRunRequest) returns (GetRunResponse);
+  rpc ListRuns(ListRunsRequest) returns (ListRunsResponse);
+
+  // Immutable authoritative Run Findings ledger (never narrowed by branch logic.filter/regex).
+  rpc ListFindings(ListFindingsRequest) returns (ListFindingsResponse);
+
+  // Returns exact UTF-8 submission.json bytes built strictly from Run Findings.
+  rpc GetSubmissionReport(GetSubmissionReportRequest) returns (GetSubmissionReportResponse);
+
+  // Returns CycloneDX 1.6 SBOM metadata & Garage reference / bytes.
+  rpc GetSbom(GetSbomRequest) returns (GetSbomResponse);
+
+  // Returns validated grounded AIReport + algorithmic Markdown/HTML readable report.
+  rpc GetAIReport(GetAIReportRequest) returns (GetAIReportResponse);
+  rpc GetReadableReport(GetReadableReportRequest) returns (GetReadableReportResponse);
+
+  // Loads full redacted Input and Output Envelope JSON (including per-port outputs for
+  // multi-port branching nodes) from Garage for Envelope Inspector.
+  rpc GetNodePayload(GetNodePayloadRequest) returns (GetNodePayloadResponse);
+
+  // Live server-stream backed by PostgreSQL run_events + LISTEN/NOTIFY.
+  // Replays all events with seq_id > after_seq before streaming live events.
+  rpc WatchRun(WatchRunRequest) returns (stream WatchRunResponse);
+}
+
+message NodeRun {
+  string node_run_id = 1;
+  string run_id = 2;
+  string node_id = 3;
+  string plugin_id = 4;
+  NodeRunStatus status = 5;
+  int32 attempt = 6;
+  string worker_id = 7;
+  repeated string active_output_ports = 8; // e.g. ["true"] or ["CRITICAL"]
+  string input_s3_key = 9;                 // secflow-artifacts/{run_id}/{node_id}/in.json
+  string output_s3_key = 10;               // secflow-artifacts/{run_id}/{node_id}/out.json
+  map<string, string> port_output_s3_keys = 11; // Optional per-port outputs: handle -> secflow-artifacts/{run_id}/{node_id}/out.{handle}.json
+  bytes redacted_preview_json = 12;        // Lightweight redacted summary for live canvas badges
+  int32 findings_emitted = 13;
+  string error_message = 14;
+  int64 duration_ms = 15;
+  google.protobuf.Timestamp started_at = 16;
+  google.protobuf.Timestamp finished_at = 17;
+}
+
+message Run {
+  string id = 1;
+  string workflow_id = 2;
+  int32 workflow_version = 3;
+  string workflow_name = 4;
+  RunStatus status = 5;
+  TriggerMetadata trigger = 6;
+  SourceRef source_ref = 7;
+  GateResult gate_result = 8;
+  EnvelopeStats findings_stats = 9;        // Computed from authoritative Run Findings ledger
+  SbomRef sbom = 10;
+  AIReport ai_report = 11;
+  repeated NodeRun node_runs = 12;
+  string parent_run_id = 13;               // Populated when created via RerunFromNode
+  string rerun_from_node_id = 14;          // Target node for RerunFromNode
+  string trace_id = 15;                    // Root W3C trace_id for Tempo/Loki link
+  string error_message = 16;
+  int64 last_seq_id = 17;
+  google.protobuf.Timestamp created_at = 18;
+  google.protobuf.Timestamp started_at = 19;
+  google.protobuf.Timestamp finished_at = 20;
+}
+
+message StartRunRequest {
+  ActorContext actor = 1;
+  string workflow_id = 2;
+  TriggerType trigger_type = 3;            // MANUAL | CI_API | MCP | SCHEDULE
+  // Optional runtime overrides (e.g. uploaded sourceId or git ref for CI/MCP runs).
+  string source_id_override = 4;
+  string repo_url_override = 5;
+  string git_ref_override = 6;
+  string commit_sha_override = 7;
+  string idempotency_key = 8;
+}
+
+message StartRunResponse {
+  Run run = 1;
+}
+
+message StartRunFromWebhookRequest {
+  string workflow_id = 1;
+  TriggerMetadata trigger = 2;
+  string idempotency_key = 3;              // Delivery ID from GitHub/GitLab
+}
+
+message StartRunFromWebhookResponse {
+  Run run = 1;
+}
+
+message RerunFromNodeRequest {
+  ActorContext actor = 1;
+  string source_run_id = 2;
+  string node_id = 3;
+  // Optional updated params for the failed node (e.g. fixed Telegram chatId) before re-running.
+  bytes updated_params_json = 4;
+  repeated SecretBinding updated_secret_bindings = 5;
+  bool persist_workflow_changes = 6;       // If true, saves edited params back to Workflow
+}
+
+message RerunFromNodeResponse {
+  Run run = 1;
+}
+
+message CancelRunRequest {
+  ActorContext actor = 1;
+  string run_id = 2;
+  string reason = 3;
+}
+
+message CancelRunResponse {
+  Run run = 1;
+}
+
+message GetRunRequest {
+  ActorContext actor = 1;
+  string run_id = 2;
+}
+
+message GetRunResponse {
+  Run run = 1;
+}
+
+message ListRunsRequest {
+  ActorContext actor = 1;
+  string workflow_id = 2;                  // Optional filter
+  RunStatus status = 3;                    // Optional filter
+  PageRequest page = 4;
+}
+
+message ListRunsResponse {
+  repeated Run runs = 1;
+  PageInfo page_info = 2;
+}
+
+message ListFindingsRequest {
+  ActorContext actor = 1;
+  string run_id = 2;
+  FindingCategory category = 3;            // Optional filter
+  Severity min_severity = 4;               // Optional filter
+  PageRequest page = 5;
+}
+
+message ListFindingsResponse {
+  repeated Finding findings = 1;
+  EnvelopeStats stats = 2;
+  PageInfo page_info = 3;
+}
+
+message GetSubmissionReportRequest {
+  ActorContext actor = 1;
+  string run_id = 2;
+}
+
+message GetSubmissionReportResponse {
+  bytes submission_json = 1;               // Exact UTF-8 JSON matching submission-format.md
+  string sha256 = 2;
+  int32 finding_count = 3;
+}
+
+message GetSbomRequest {
+  ActorContext actor = 1;
+  string run_id = 2;
+  bool include_content = 3;
+}
+
+message GetSbomResponse {
+  SbomRef sbom = 1;
+  bytes cyclonedx_json = 2;                // Populated if include_content == true
+}
+
+message GetAIReportRequest {
+  ActorContext actor = 1;
+  string run_id = 2;
+}
+
+message GetAIReportResponse {
+  AIReport report = 1;
+}
+
+enum ReportFormat {
+  REPORT_FORMAT_UNSPECIFIED = 0;
+  REPORT_FORMAT_MARKDOWN = 1;
+  REPORT_FORMAT_HTML = 2;
+}
+
+message GetReadableReportRequest {
+  ActorContext actor = 1;
+  string run_id = 2;
+  ReportFormat format = 3;
+}
+
+message GetReadableReportResponse {
+  ReportFormat format = 1;
+  string content_type = 2;
+  bytes content = 3;
+  int32 finding_count = 4;                 // Guaranteed identical to Submission Report count
+}
+
+message PortEnvelopeOutput {
+  string source_handle = 1;                // e.g. "default", "true", "false", "match", "nomatch", "CRITICAL"
+  bytes output_envelope_json = 2;          // Full redacted Envelope emitted on this port
+}
+
+message GetNodePayloadRequest {
+  ActorContext actor = 1;
+  string run_id = 2;
+  string node_id = 3;
+  string source_handle = 4;                // Optional: when inspecting a specific outgoing edge/port
+}
+
+message GetNodePayloadResponse {
+  string run_id = 1;
+  string node_id = 2;
+  string plugin_id = 3;
+  NodeRunStatus status = 4;
+  bytes input_envelope_json = 5;           // Full redacted in.json loaded from Garage
+  bytes output_envelope_json = 6;          // Default/selected-handle redacted out.json loaded from Garage
+  repeated string active_output_ports = 7;
+  repeated PortEnvelopeOutput port_outputs = 8; // Per-port output Envelopes for multi-port nodes (e.g. logic.regex)
+}
+
+enum RunEventType {
+  RUN_EVENT_TYPE_UNSPECIFIED = 0;
+  RUN_EVENT_TYPE_RUN_STARTED = 1;
+  RUN_EVENT_TYPE_NODE_STATUS_CHANGED = 2;
+  RUN_EVENT_TYPE_EDGE_TRAVERSED = 3;
+  RUN_EVENT_TYPE_FINDINGS_UPDATED = 4;
+  RUN_EVENT_TYPE_SBOM_READY = 5;
+  RUN_EVENT_TYPE_AI_REPORT_READY = 6;
+  RUN_EVENT_TYPE_GATE_EVALUATED = 7;
+  RUN_EVENT_TYPE_RUN_COMPLETED = 8;
+  RUN_EVENT_TYPE_RUN_FAILED = 9;
+  RUN_EVENT_TYPE_RUN_CANCELLED = 10;
+}
+
+message WatchRunRequest {
+  ActorContext actor = 1;
+  string run_id = 2;
+  int64 after_seq = 3;                     // 0 to replay from start; >0 to resume on reconnect
+}
+
+message WatchRunResponse {
+  RunEvent event = 1;
+}
+
+message RunEvent {
+  int64 seq_id = 1;                        // Monotonic BIGSERIAL per run_events table
+  string run_id = 2;
+  RunEventType event_type = 3;
+  RunStatus run_status = 4;
+  string node_id = 5;
+  string node_run_id = 6;
+  NodeRunStatus node_status = 7;
+  string edge_id = 8;                      // Set for EDGE_TRAVERSED
+  string source_handle = 9;                // Active port handle
+  EnvelopeStats stats = 10;
+  GateResult gate_result = 11;
+  bytes redacted_preview_json = 12;        // Lightweight redacted preview (never raw secrets)
+  string message = 13;
+  google.protobuf.Timestamp created_at = 14;
+}

@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://secflow.local/schemas/submission-report.schema.json",
+  "title": "SecFlow Mandatory Submission Report (tests/data/repos/mentor-training/docs/submission-format.md)",
+  "description": "Strict UTF-8 JSON contract for GET /runs/{runId}/submission.json built exclusively from immutable Run Findings. SBOM components and LLM prose MUST NOT be mixed into this array. Raw secret values MUST NEVER appear.",
+  "type": "object",
+  "required": ["findings"],
+  "additionalProperties": false,
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/codeOrSecretFinding" },
+          { "$ref": "#/$defs/scaFinding" }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": ".*\\S.*"
+    },
+    "relativePath": {
+      "allOf": [
+        { "$ref": "#/$defs/nonEmptyString" },
+        {
+          "type": "string",
+          "pattern": "^[^/:\\\\][^:]*$",
+          "not": {
+            "pattern": "(^|[\\\\/])\\.\\.([\\\\/]|$)"
+          }
+        }
+      ],
+      "description": "Relative non-whitespace project path using forward slashes; no leading slash, drive letters, colons, or '..' segments. RE2 and ECMA-262 compatible."
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    },
+    "codeOrSecretFinding": {
+      "type": "object",
+      "required": ["category", "path", "class", "line"],
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "type": "string",
+          "enum": ["SECRET", "SAST"]
+        },
+        "path": { "$ref": "#/$defs/relativePath" },
+        "class": {
+          "$ref": "#/$defs/nonEmptyString",
+          "description": "Canonical classes: SECRET={password,api-key,configuration-token,secret-fallback,recoverable-token}; SAST={sql-injection,tls-verification,credentialed-cors,route-authorization,object-authorization}; custom codes allowed for external plugins."
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Inclusive end line. Runtime validator enforces line <= endLine <= line + 14. Omit if absent."
+        },
+        "severity": { "$ref": "#/$defs/severity" },
+        "description": { "$ref": "#/$defs/nonEmptyString" },
+        "remediation": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "scaFinding": {
+      "type": "object",
+      "required": ["category", "path", "group", "artifact", "version", "advisoryId"],
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "const": "SCA"
+        },
+        "path": { "$ref": "#/$defs/relativePath" },
+        "group": { "$ref": "#/$defs/nonEmptyString" },
+        "artifact": { "$ref": "#/$defs/nonEmptyString" },
+        "version": { "$ref": "#/$defs/nonEmptyString" },
+        "advisoryId": {
+          "type": "string",
+          "pattern": "^(CVE-\\d{4}-\\d{4,7}|GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})$"
+        },
+        "severity": { "$ref": "#/$defs/severity" },
+        "description": { "$ref": "#/$defs/nonEmptyString" },
+        "remediation": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    }
+  }
+}

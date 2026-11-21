@@ -1,0 +1,24 @@
+{
+  "findings": [
+    {
+      "category": "SECRET",
+      "path": "src/main/kotlin/lab/repairdesk/integration/QuoteRequest.kt",
+      "class": "api-key",
+      "line": 7
+    },
+    {
+      "category": "SCA",
+      "path": "build.gradle.kts",
+      "group": "org.apache.commons",
+      "artifact": "commons-text",
+      "version": "1.9",
+      "advisoryId": "CVE-2022-42889"
+    },
+    {
+      "category": "SAST",
+      "path": "src/main/kotlin/lab/repairdesk/repair/RepairLookupController.kt",
+      "class": "sql-injection",
+      "line": 13
+    }
+  ]
+}

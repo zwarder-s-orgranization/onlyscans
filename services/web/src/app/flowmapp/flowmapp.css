@@ -1,0 +1,237 @@
+.flowmapp-root {
+  --fm-signal: #0080ff;
+  --fm-voltage: #0050ff;
+  --fm-sky: #c5e0fb;
+  --fm-pencil: #8c9baa;
+  --fm-graphite: #636f7b;
+  --fm-ink: #000000;
+  --fm-carbon: #222222;
+  --fm-paper: #ffffff;
+  --fm-pastel-yellow: #fff3c4;
+  --fm-pastel-mint: #c8f0d8;
+  --fm-pastel-pink: #ffd6e0;
+  --fm-pastel-peach: #ffe0c4;
+  --fm-float-shadow: 0px 0px 18px 0px rgba(0, 0, 0, 0.06);
+  --fm-cta-glow: 0px 0px 18px 0px rgba(197, 224, 251, 0.65);
+
+  background-color: var(--fm-paper);
+  color: var(--fm-ink);
+  font-family: var(--font-fm-sans), "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  caret-color: var(--fm-signal);
+}
+
+.flowmapp-root ::selection {
+  background-color: var(--fm-sky);
+  color: var(--fm-ink);
+}
+
+.fm-tnum {
+  font-feature-settings: "cv11", "ss01", "tnum";
+  font-variant-numeric: tabular-nums;
+}
+
+.fm-mono {
+  font-family: var(--font-fm-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.fm-focus:focus-visible {
+  outline: 2px solid var(--fm-signal);
+  outline-offset: 2px;
+}
+
+.fm-select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23636f7b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  background-size: 16px 16px;
+  padding-right: 2.25rem;
+}
+
+.fm-btn-ink {
+  background-color: var(--fm-ink);
+  color: var(--fm-paper);
+  border-radius: 1600px;
+  transition: background-color 160ms var(--ease-out-quart), transform 140ms var(--ease-out-quart);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .fm-btn-ink:hover {
+    background-color: var(--fm-carbon);
+  }
+}
+
+.fm-btn-ink:active {
+  transform: scale(0.98);
+}
+
+.fm-btn-signal {
+  background-color: #0066e6;
+  color: var(--fm-paper);
+  border-radius: 1600px;
+  box-shadow: var(--fm-cta-glow);
+  transition: background-color 160ms var(--ease-out-quart), transform 140ms var(--ease-out-quart);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .fm-btn-signal:hover {
+    background-color: var(--fm-voltage);
+  }
+}
+
+.fm-btn-signal:active {
+  transform: scale(0.98);
+}
+
+.fm-btn-outline {
+  background-color: var(--fm-paper);
+  color: var(--fm-carbon);
+  border: 1px solid var(--fm-pencil);
+  border-radius: 1600px;
+  transition: border-color 160ms var(--ease-out-quart), color 160ms var(--ease-out-quart), background-color 160ms var(--ease-out-quart), transform 140ms var(--ease-out-quart);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .fm-btn-outline:hover {
+    border-color: var(--fm-signal);
+    color: var(--fm-ink);
+    background-color: #f6faff;
+  }
+}
+
+.fm-btn-outline:active {
+  transform: scale(0.98);
+}
+
+.fm-float {
+  background-color: var(--fm-paper);
+  box-shadow: var(--fm-float-shadow);
+}
+
+.flowmapp-root .react-flow__pane {
+  cursor: grab;
+}
+
+.flowmapp-root .react-flow__pane:active {
+  cursor: grabbing;
+}
+
+.flowmapp-root .react-flow__handle {
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--fm-signal);
+  background: var(--fm-paper);
+  transition: transform 140ms var(--ease-out-quart), background-color 140ms var(--ease-out-quart);
+}
+
+.flowmapp-root .react-flow__handle:hover {
+  transform: scale(1.25);
+  background: var(--fm-signal);
+}
+
+.flowmapp-root .react-flow__controls {
+  box-shadow: var(--fm-float-shadow);
+  border: 1px solid var(--fm-pencil);
+  border-radius: 1600px;
+  overflow: hidden;
+  background: var(--fm-paper);
+}
+
+.flowmapp-root .react-flow__controls-button {
+  background: var(--fm-paper);
+  border-bottom: 1px solid rgba(140, 155, 170, 0.35);
+  color: var(--fm-carbon);
+  width: 34px;
+  height: 34px;
+}
+
+.flowmapp-root .react-flow__controls-button:hover {
+  background: #f6faff;
+  color: var(--fm-signal);
+}
+
+.flowmapp-root .react-flow__edge-path {
+  transition: stroke 160ms var(--ease-out-quart), stroke-width 160ms var(--ease-out-quart);
+}
+
+.flowmapp-root .react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--fm-voltage) !important;
+  stroke-width: 2.5 !important;
+}
+
+.fm-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.fm-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.fm-scroll::-webkit-scrollbar-thumb {
+  background: rgba(140, 155, 170, 0.45);
+  border-radius: 1600px;
+}
+
+@keyframes fm-perimeter-orbit {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+.fm-beam-rotor {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 220%;
+  aspect-ratio: 1 / 1;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    rgba(197, 224, 251, 0.25) 32deg,
+    #7cc4ff 74deg,
+    #0080ff 106deg,
+    #0050ff 134deg,
+    #c5e0fb 152deg,
+    transparent 176deg,
+    transparent 214deg,
+    rgba(197, 224, 251, 0.35) 254deg,
+    #0080ff 296deg,
+    #0050ff 324deg,
+    transparent 356deg
+  );
+  animation: fm-perimeter-orbit 2.4s linear infinite;
+  pointer-events: none;
+}
+
+.fm-beam-rotor--running {
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    #c5e0fb 24deg,
+    #52b2ff 60deg,
+    #0080ff 96deg,
+    #0050ff 132deg,
+    #000000 146deg,
+    #52b2ff 160deg,
+    transparent 184deg,
+    transparent 208deg,
+    #c5e0fb 244deg,
+    #0080ff 288deg,
+    #0050ff 326deg,
+    transparent 358deg
+  );
+  animation: fm-perimeter-orbit 1.15s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fm-beam-rotor,
+  .fm-beam-rotor--running {
+    animation: none;
+    background: var(--fm-signal);
+  }
+}

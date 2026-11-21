@@ -1,0 +1,1003 @@
+# ==============================================================================
+# SecFlow GraphQL Schema (Primary Product API — edge-gateway / gqlgen)
+#
+# Transport:
+#   - Queries & Mutations : POST /graphql
+#   - Live Subscriptions  : WS   /graphql (graphql-ws subprotocol)
+#   - Auth                : Authorization: Bearer <JWT | Scoped CI/MCP Token>
+#                           (AUTH_MODE=local issues JWTs via Mutation.login;
+#                           AUTH_MODE=oidc validates external OIDC JWKS)
+#   - Tracing             : W3C traceparent header propagated end-to-end
+#
+# Architectural Invariants:
+#   - Product CRUD is NEVER duplicated in REST.
+#   - HTTP edge endpoints are strictly limited to binary upload (/upload,
+#     /catalogs/upload), artifact downloads (/runs/{id}/submission.json,
+#     /sbom.cdx.json, /report.md, /report.html), native git webhooks
+#     (/webhooks/git/{workflowId}), local dev Webhook Inspector, /mcp, and
+#     /healthz + /readyz.
+#   - Raw secret values are NEVER returned in any GraphQL response.
+#   - Run.findings represents the immutable authoritative Run Findings ledger
+#     (identical to submission.json); NodeRunPayload represents the branch-local
+#     Envelope (which may be filtered by logic.filter / logic.regex).
+#
+# Standard GraphQL Error Extensions (`extensions.code`):
+#   UNAUTHENTICATED | FORBIDDEN | SECRET_SCOPE_DENIED | ALLOWLIST_DENIED |
+#   DENYLIST_BLOCKED | VALIDATION_FAILED | NOT_FOUND | CONFLICT |
+#   RATE_LIMITED | INTERNAL
+# ==============================================================================
+
+scalar Time
+scalar JSON
+scalar BigInt
+
+# ------------------------------------------------------------------------------
+# Enums
+# ------------------------------------------------------------------------------
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+"""
+Mandatory 3-category taxonomy from tests/data/repos/mentor-training/docs/submission-format.md.
+SBOM artifacts are exposed separately via Run.sbom and NEVER mixed into FindingCategory.
+"""
+enum FindingCategory {
+  SECRET
+  SAST
+  SCA
+}
+
+"""
+Six orthogonal node families from Spec #1 (US #1 / ADR-0004):
+1. Triggers, 2. Sources, 3. Analyzers & SBOM, 4. Flow & Data Logic,
+5. AI & Reports, 6. Actions & MCP.
+"""
+enum PluginCategory {
+  TRIGGER
+  SOURCE
+  ANALYZER
+  LOGIC
+  AI_REPORT
+  ACTION
+}
+
+enum PluginStatus {
+  ONLINE
+  DEGRADED
+  OFFLINE
+}
+
+enum SandboxProfile {
+  ORCHESTRATOR_BUILTIN
+  INTERNAL_ONLY
+  EGRESS_EXTERNAL
+}
+
+enum PluginRegistryEventType {
+  REGISTERED
+  UPDATED
+  OFFLINE
+}
+
+enum RunStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum NodeRunStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  SKIPPED
+  CANCELLED
+}
+
+enum RunEventType {
+  RUN_STARTED
+  NODE_STATUS_CHANGED
+  EDGE_TRAVERSED
+  FINDINGS_UPDATED
+  SBOM_READY
+  AI_REPORT_READY
+  GATE_EVALUATED
+  RUN_COMPLETED
+  RUN_FAILED
+  RUN_CANCELLED
+}
+
+enum GateStatus {
+  PASS
+  WARN
+  FAIL
+}
+
+enum AIQuality {
+  VERIFIED
+  DEGRADED
+  FALLBACK
+}
+
+enum ReleaseDecision {
+  PASS
+  WARN
+  BLOCK
+}
+
+enum PrivacyMode {
+  REDACTED_SNIPPET
+  METADATA_ONLY
+}
+
+enum AIProviderMode {
+  CLOUD
+  OLLAMA
+  TEMPLATE_FALLBACK
+}
+
+enum AIOperation {
+  AI_EXPLAIN
+  GENERATE_WORKFLOW
+}
+
+enum Role {
+  VIEWER
+  EDITOR
+  OWNER
+}
+
+enum AuthMode {
+  LOCAL
+  OIDC
+  SCOPED_TOKEN
+  WEBHOOK
+}
+
+enum GitProvider {
+  GITHUB
+  GITLAB
+}
+
+enum ValidationSeverity {
+  ERROR
+  WARNING
+}
+
+enum TriggerType {
+  MANUAL
+  SCHEDULE
+  WEBHOOK
+  CI_API
+  MCP
+  RERUN
+}
+
+enum CiProvider {
+  GITHUB_ACTIONS
+  GITLAB_CI
+}
+
+enum ReportFormat {
+  MARKDOWN
+  HTML
+}
+
+enum SecretKind {
+  TELEGRAM_BOT_TOKEN
+  WEBHOOK_HMAC_SECRET
+  SMTP_PASSWORD
+  GIT_TOKEN
+  GIT_WEBHOOK_SECRET
+  LLM_API_KEY
+  MCP_AUTH_HEADER
+  GENERIC
+}
+
+enum SecretStoreBackend {
+  PG_AES
+  VAULT
+}
+
+# ------------------------------------------------------------------------------
+# Auth & Identity
+# ------------------------------------------------------------------------------
+
+type Actor {
+  subject: String!
+  email: String
+  """Null for scoped CI/MCP tokens whose permissions derive strictly from `scopes` and `scopedWorkflowId`."""
+  role: Role
+  scopes: [String!]!
+  scopedWorkflowId: ID
+  authMode: AuthMode!
+}
+
+type AuthSession {
+  accessToken: String!
+  tokenType: String!
+  expiresAt: Time!
+  actor: Actor!
+}
+
+# ------------------------------------------------------------------------------
+# Workflow & React Flow Graph Types
+# ------------------------------------------------------------------------------
+
+type Position {
+  x: Float!
+  y: Float!
+}
+
+input PositionInput {
+  x: Float!
+  y: Float!
+}
+
+type SecretBinding {
+  paramKey: String!
+  secretRef: ID!
+}
+
+input SecretBindingInput {
+  paramKey: String!
+  secretRef: ID!
+}
+
+type WorkflowNode {
+  id: ID!
+  pluginId: String!
+  label: String!
+  position: Position!
+  """JSON object matching PluginManifest.paramsJsonSchema (see node-params.schema.json). Must NEVER contain raw secrets."""
+  params: JSON!
+  """Explicit per-node secret_ref bindings enforced by SecretService.ResolveScopedSecret."""
+  secretBindings: [SecretBinding!]!
+}
+
+input WorkflowNodeInput {
+  id: ID!
+  pluginId: String!
+  label: String!
+  position: PositionInput!
+  params: JSON!
+  secretBindings: [SecretBindingInput!] = []
+}
+
+type WorkflowEdge {
+  id: ID!
+  sourceNodeId: ID!
+  sourceHandle: String!
+  targetNodeId: ID!
+  targetHandle: String!
+}
+
+input WorkflowEdgeInput {
+  id: ID!
+  sourceNodeId: ID!
+  sourceHandle: String! = "default"
+  targetNodeId: ID!
+  targetHandle: String! = "default"
+}
+
+type WorkflowGraph {
+  schemaVersion: Int!
+  nodes: [WorkflowNode!]!
+  edges: [WorkflowEdge!]!
+}
+
+input WorkflowGraphInput {
+  schemaVersion: Int! = 1
+  nodes: [WorkflowNodeInput!]!
+  edges: [WorkflowEdgeInput!]!
+}
+
+type ValidationIssue {
+  code: String!
+  severity: ValidationSeverity!
+  message: String!
+  nodeId: ID
+  edgeId: ID
+  fieldPath: String
+}
+
+type WorkflowValidationResult {
+  valid: Boolean!
+  issues: [ValidationIssue!]!
+}
+
+type Workflow {
+  id: ID!
+  name: String!
+  description: String!
+  version: Int!
+  graph: WorkflowGraph!
+  ownerSubject: String!
+  scheduleEnabled: Boolean!
+  cronExpression: String
+  webhookEnabled: Boolean!
+  webhookPath: String!
+  sourceTemplateId: ID
+  validationIssues: [ValidationIssue!]!
+  createdAt: Time!
+  updatedAt: Time!
+}
+
+type WorkflowConnection {
+  items: [Workflow!]!
+  nextCursor: String
+  hasMore: Boolean!
+  totalCount: BigInt!
+}
+
+# ------------------------------------------------------------------------------
+# ★1 Template Library
+# ------------------------------------------------------------------------------
+
+type WorkflowTemplate {
+  id: ID!
+  slug: String!
+  name: String!
+  description: String!
+  problemSolved: String!
+  tags: [String!]!
+  isBuiltin: Boolean!
+  """Sanitized graph guaranteed free of secretBindings and local repository URLs."""
+  sanitizedGraph: WorkflowGraph!
+  authorSubject: String!
+  cloneCount: Int!
+  createdAt: Time!
+  updatedAt: Time!
+}
+
+type WorkflowTemplateConnection {
+  items: [WorkflowTemplate!]!
+  nextCursor: String
+  hasMore: Boolean!
+  totalCount: BigInt!
+}
+
+# ------------------------------------------------------------------------------
+# ★2 CI/CD Integration
+# ------------------------------------------------------------------------------
+
+type GeneratedCiConfig {
+  provider: CiProvider!
+  filename: String!
+  yamlContent: String!
+  requiredCiSecrets: [String!]!
+}
+
+# ------------------------------------------------------------------------------
+# ★3 Text-to-Workflow & AI Provider Introspection
+# ------------------------------------------------------------------------------
+
+type GeneratedWorkflowPreview {
+  suggestedName: String!
+  suggestedDescription: String!
+  rationale: String!
+  """Validated Trigger -> Source -> ... graph with zero secrets; never auto-executed."""
+  graph: WorkflowGraph!
+  """Inline fields highlighted on canvas after dagre/ELK auto-layout."""
+  missingFields: [ValidationIssue!]!
+  modelId: String!
+  providerMode: AIProviderMode!
+}
+
+type AIProviderStatus {
+  providerMode: AIProviderMode!
+  modelId: String!
+  endpointHost: String!
+  closedLoop: Boolean!
+  defaultPrivacyMode: PrivacyMode!
+  healthy: Boolean!
+}
+
+type AIAuditLogEntry {
+  id: ID!
+  runId: ID
+  nodeRunId: ID
+  operation: AIOperation!
+  modelId: String!
+  providerMode: AIProviderMode!
+  privacyMode: PrivacyMode!
+  promptHash: String!
+  tokensIn: Int!
+  tokensOut: Int!
+  latencyMs: BigInt!
+  quality: AIQuality!
+  strippedHallucinatedAdvisories: Int!
+  cacheHit: Boolean!
+  createdAt: Time!
+}
+
+type AIAuditLogConnection {
+  items: [AIAuditLogEntry!]!
+  nextCursor: String
+  hasMore: Boolean!
+  totalCount: BigInt!
+}
+
+# ------------------------------------------------------------------------------
+# Plugins & Hot-Plug Registry (ADR-0001)
+# ------------------------------------------------------------------------------
+
+type PortDefinition {
+  id: String!
+  label: String!
+  description: String
+}
+
+type Plugin {
+  pluginId: ID!
+  version: String!
+  displayName: String!
+  description: String!
+  category: PluginCategory!
+  capabilities: [String!]!
+  """JSON Schema Draft 2020-12 used by frontend Inspector to auto-generate node forms."""
+  paramsJsonSchema: JSON!
+  inputPorts: [PortDefinition!]!
+  outputPorts: [PortDefinition!]!
+  runtimeLanguage: String!
+  sandboxProfile: SandboxProfile!
+  isExternal: Boolean!
+  requiredSecretKeys: [String!]!
+  status: PluginStatus!
+  activeWorkers: Int!
+  queueDepth: BigInt!
+  registeredAt: Time!
+  lastSeenAt: Time!
+}
+
+type PluginRegistryEvent {
+  eventType: PluginRegistryEventType!
+  plugin: Plugin!
+  occurredAt: Time!
+}
+
+# ------------------------------------------------------------------------------
+# Runs, Findings, SBOM, AI Report & Envelope Inspector (ADR-0004)
+# ------------------------------------------------------------------------------
+
+type SourceRef {
+  sourceId: ID!
+  sha256: String!
+  repoName: String!
+  repoUrl: String
+  gitRef: String
+  commitSha: String
+  sizeBytes: BigInt!
+  fileCount: Int!
+}
+
+type Sbom {
+  digest: String!
+  specVersion: String!
+  componentCount: Int!
+  vulnerabilityCount: Int!
+  downloadUrl: String!
+  generatedAt: Time!
+}
+
+type TriggerMetadata {
+  type: TriggerType!
+  repoUrl: String
+  branch: String
+  commitSha: String
+  prNumber: Int
+  gitProvider: GitProvider
+  deliveryId: String
+  triggeredBy: String
+  commitStatusUrl: String
+  triggeredAt: Time!
+}
+
+type EnvelopeStats {
+  total: Int!
+  newCount: Int!
+  critical: Int!
+  high: Int!
+  medium: Int!
+  low: Int!
+  secretCount: Int!
+  sastCount: Int!
+  scaCount: Int!
+  maxSeverity: Severity
+}
+
+type GateResult {
+  status: GateStatus!
+  reason: String!
+  nodeId: ID!
+}
+
+"""
+Authoritative Finding from Run Findings ledger.
+Note: `findingClass` serializes as `"class"` in GET /runs/{id}/submission.json.
+"""
+type Finding {
+  findingId: ID!
+  fingerprint: String!
+  sourceNodeId: ID!
+  pluginId: String!
+  category: FindingCategory!
+  path: String!
+  findingClass: String
+  line: Int
+  endLine: Int
+  group: String
+  artifact: String
+  version: String
+  advisoryId: String
+  severity: Severity
+  description: String
+  remediation: String
+  maskedSnippet: String
+  isNewVsBaseline: Boolean!
+}
+
+type FindingConnection {
+  items: [Finding!]!
+  stats: EnvelopeStats!
+  nextCursor: String
+  hasMore: Boolean!
+  totalCount: BigInt!
+}
+
+"""
+Authoritative finding coordinates deterministically re-attached by ai-service
+grounding validator (never trusted from LLM output).
+"""
+type GroundedFindingSummary {
+  category: FindingCategory!
+  path: String!
+  line: Int
+  endLine: Int
+  findingClass: String
+  group: String
+  artifact: String
+  version: String
+  advisoryId: String
+  severity: Severity
+}
+
+type AIReportGroup {
+  title: String!
+  maxSeverity: Severity!
+  findingIds: [ID!]!
+  summary: String!
+}
+
+type AIReportItem {
+  findingId: ID!
+  priorityRank: Int!
+  plainLanguageRisk: String!
+  businessImpact: String!
+  remediationSteps: [String!]!
+  referencedAdvisories: [String!]!
+  finding: GroundedFindingSummary!
+}
+
+type AIReport {
+  quality: AIQuality!
+  releaseDecision: ReleaseDecision!
+  executiveSummary: String!
+  groups: [AIReportGroup!]!
+  items: [AIReportItem!]!
+  modelId: String!
+  providerMode: AIProviderMode!
+  privacyMode: PrivacyMode!
+  strippedHallucinatedAdvisories: Int!
+  cached: Boolean!
+  promptHash: String!
+  tokensIn: Int!
+  tokensOut: Int!
+  latencyMs: BigInt!
+  createdAt: Time!
+}
+
+type ReadableReport {
+  format: ReportFormat!
+  content: String!
+  findingCount: Int!
+  downloadUrl: String!
+}
+
+type NodeRun {
+  nodeRunId: ID!
+  runId: ID!
+  nodeId: ID!
+  pluginId: String!
+  status: NodeRunStatus!
+  attempt: Int!
+  workerId: String
+  activeOutputPorts: [String!]!
+  redactedPreview: JSON
+  findingsEmitted: Int!
+  errorMessage: String
+  durationMs: BigInt!
+  startedAt: Time
+  finishedAt: Time
+}
+
+type PortEnvelopeOutput {
+  sourceHandle: String!
+  """Full redacted output Envelope emitted on this port handle."""
+  outputEnvelope: JSON!
+}
+
+type NodeRunPayload {
+  runId: ID!
+  nodeId: ID!
+  pluginId: String!
+  status: NodeRunStatus!
+  """Full redacted input Envelope JSON loaded from Garage (in.json)."""
+  inputEnvelope: JSON
+  """Full redacted output Envelope JSON loaded from Garage (out.json or selected sourceHandle)."""
+  outputEnvelope: JSON
+  activeOutputPorts: [String!]!
+  """Per-port output Envelopes for multi-port branching nodes (e.g. logic.regex match/nomatch)."""
+  portOutputs: [PortEnvelopeOutput!]!
+}
+
+type Run {
+  id: ID!
+  workflowId: ID!
+  workflowVersion: Int!
+  workflowName: String!
+  status: RunStatus!
+  trigger: TriggerMetadata!
+  sourceRef: SourceRef
+  gateResult: GateResult
+  """Aggregated stats from the immutable Run Findings ledger."""
+  findingsStats: EnvelopeStats!
+  sbom: Sbom
+  aiReport: AIReport
+  nodeRuns: [NodeRun!]!
+  parentRunId: ID
+  rerunFromNodeId: ID
+  traceId: String!
+  errorMessage: String
+  lastSeqId: BigInt!
+  submissionDownloadUrl: String!
+  markdownReportDownloadUrl: String!
+  htmlReportDownloadUrl: String!
+  createdAt: Time!
+  startedAt: Time
+  finishedAt: Time
+}
+
+type RunConnection {
+  items: [Run!]!
+  nextCursor: String
+  hasMore: Boolean!
+  totalCount: BigInt!
+}
+
+type RunEvent {
+  seqId: BigInt!
+  runId: ID!
+  eventType: RunEventType!
+  runStatus: RunStatus!
+  nodeId: ID
+  nodeRunId: ID
+  nodeStatus: NodeRunStatus
+  edgeId: ID
+  sourceHandle: String
+  stats: EnvelopeStats
+  gateResult: GateResult
+  """Lightweight redacted preview for live canvas badges (never raw secrets)."""
+  redactedPreview: JSON
+  message: String
+  createdAt: Time!
+}
+
+# ------------------------------------------------------------------------------
+# Secrets, Scoped Tokens, Catalogs, MCP Connections & Local Webhook Inspector
+# ------------------------------------------------------------------------------
+
+type SecretMetadata {
+  secretRef: ID!
+  name: String!
+  kind: SecretKind!
+  maskedPreview: String!
+  backend: SecretStoreBackend!
+  createdBy: String!
+  createdAt: Time!
+  updatedAt: Time!
+}
+
+type ScopedTokenMetadata {
+  tokenId: ID!
+  name: String!
+  tokenPrefix: String!
+  scopes: [String!]!
+  workflowId: ID
+  createdBy: String!
+  expiresAt: Time
+  lastUsedAt: Time
+  revokedAt: Time
+  createdAt: Time!
+}
+
+type CreatedScopedToken {
+  metadata: ScopedTokenMetadata!
+  """Plaintext token returned ONCE upon creation. Store securely."""
+  plaintextToken: String!
+}
+
+type VulnerabilityCatalog {
+  id: ID!
+  name: String!
+  ecosystem: String!
+  versionFormat: String!
+  s3Key: String!
+  sha256: String!
+  snapshotDate: String!
+  advisoryCount: Int!
+  isDefault: Boolean!
+  uploadedBy: String!
+  createdAt: Time!
+}
+
+type MCPConnectionConfig {
+  name: String!
+  description: String!
+  endpointUrl: String!
+  authSecretRef: ID
+  authHeaderName: String!
+  allowedTools: [String!]!
+  deniedTools: [String!]!
+}
+
+input MCPConnectionConfigInput {
+  name: String!
+  description: String = ""
+  endpointUrl: String!
+  authSecretRef: ID
+  authHeaderName: String = "Authorization"
+  allowedTools: [String!] = []
+  deniedTools: [String!] = []
+}
+
+type MCPConnection {
+  id: ID!
+  config: MCPConnectionConfig!
+  enabled: Boolean!
+  createdBy: String!
+  createdAt: Time!
+  updatedAt: Time!
+}
+
+type MCPToolDescriptor {
+  name: String!
+  description: String!
+  """JSON Schema from external MCP tools/list -> auto-generates mcp.tool Inspector form."""
+  inputSchema: JSON!
+}
+
+type MCPConnectionToolsResult {
+  connectionId: ID!
+  tools: [MCPToolDescriptor!]!
+  blockedToolCount: Int!
+  fetchedAt: Time!
+}
+
+type MCPConnectionTestResult {
+  ok: Boolean!
+  serverName: String
+  serverVersion: String
+  availableToolCount: Int!
+  blockedToolCount: Int!
+  errorMessage: String
+}
+
+type WebhookInspectorDelivery {
+  id: ID!
+  channelKey: String!
+  method: String!
+  headers: JSON!
+  body: JSON!
+  hmacValid: Boolean
+  receivedAt: Time!
+}
+
+# ------------------------------------------------------------------------------
+# Inputs
+# ------------------------------------------------------------------------------
+
+input LoginInput {
+  email: String!
+  password: String!
+}
+
+input SaveWorkflowInput {
+  """Omit to create a new Workflow; provide to update an existing Workflow."""
+  id: ID
+  expectedVersion: Int
+  name: String!
+  description: String = ""
+  graph: WorkflowGraphInput!
+}
+
+input StartRunInput {
+  workflowId: ID!
+  sourceIdOverride: ID
+  repoUrlOverride: String
+  gitRefOverride: String
+  commitShaOverride: String
+  idempotencyKey: String
+}
+
+input RerunFromNodeInput {
+  sourceRunId: ID!
+  nodeId: ID!
+  updatedParams: JSON
+  updatedSecretBindings: [SecretBindingInput!]
+  persistWorkflowChanges: Boolean = false
+}
+
+input PublishTemplateInput {
+  workflowId: ID!
+  name: String!
+  description: String!
+  problemSolved: String!
+  tags: [String!] = []
+}
+
+input CloneTemplateInput {
+  templateId: ID!
+  newWorkflowName: String!
+}
+
+input CreateSecretInput {
+  name: String!
+  kind: SecretKind!
+  plaintextValue: String!
+}
+
+input CreateScopedTokenInput {
+  name: String!
+  scopes: [String!]!
+  workflowId: ID
+  expiresAt: Time
+}
+
+input GenerateWorkflowFromTextInput {
+  prompt: String!
+  locale: String = "ru"
+}
+
+input GenerateCiConfigInput {
+  workflowId: ID!
+  provider: CiProvider!
+  secflowBaseUrl: String!
+  failOnSeverity: Severity = HIGH
+  failOnPolicyGate: Boolean = true
+}
+
+input RegisterMCPConnectionInput {
+  config: MCPConnectionConfigInput!
+}
+
+input UpdateMCPConnectionInput {
+  id: ID!
+  config: MCPConnectionConfigInput!
+  enabled: Boolean!
+}
+
+# ------------------------------------------------------------------------------
+# Root Operations
+# ------------------------------------------------------------------------------
+
+type Query {
+  me: Actor!
+
+  # Workflows & Validation
+  workflow(id: ID!): Workflow
+  workflows(search: String, limit: Int = 25, cursor: String): WorkflowConnection!
+  validateWorkflow(graph: WorkflowGraphInput!): WorkflowValidationResult!
+
+  # Runs, Findings, Reports & Envelope Inspector
+  run(id: ID!): Run
+  runs(workflowId: ID, status: RunStatus, limit: Int = 25, cursor: String): RunConnection!
+  """Authoritative Run Findings ledger (identical to submission.json)."""
+  findings(
+    runId: ID!
+    category: FindingCategory
+    minSeverity: Severity
+    limit: Int = 100
+    cursor: String
+  ): FindingConnection!
+  """Inspect Input vs Output Envelope for a node or a specific outgoing edge/port (sourceHandle)."""
+  nodeRunPayload(runId: ID!, nodeId: ID!, sourceHandle: String): NodeRunPayload
+  sbom(runId: ID!): Sbom
+  readableReport(runId: ID!, format: ReportFormat = MARKDOWN): ReadableReport
+
+  # Plugins (Built-in + Live External Sandbox Plugins)
+  plugins(category: PluginCategory, includeOffline: Boolean = false): [Plugin!]!
+  plugin(pluginId: ID!): Plugin
+
+  # ★1 Template Library
+  templates(search: String, tags: [String!], limit: Int = 25, cursor: String): WorkflowTemplateConnection!
+  template(id: ID!): WorkflowTemplate
+
+  # Versioned Maven SCA Catalogs (Garage)
+  catalogs: [VulnerabilityCatalog!]!
+
+  # AI Provider & Audit
+  aiProviderStatus: AIProviderStatus!
+  aiAuditLogs(runId: ID, limit: Int = 25, cursor: String): AIAuditLogConnection!
+
+  # Secrets & Scoped Tokens (Masked Only)
+  secrets(kind: SecretKind): [SecretMetadata!]!
+  scopedTokens: [ScopedTokenMetadata!]!
+
+  # Outbound MCP Connections (ADR-0003)
+  mcpConnections: [MCPConnection!]!
+  mcpConnectionTools(connectionId: ID!, forceRefresh: Boolean = false): MCPConnectionToolsResult!
+
+  # Local Dev/Demo Webhook Inspector (T6)
+  webhookInspectorDeliveries(channelKey: String!, limit: Int = 25): [WebhookInspectorDelivery!]!
+}
+
+type Mutation {
+  # Local Auth (active when AUTH_MODE=local; public unauthenticated mutation)
+  login(input: LoginInput!): AuthSession!
+
+  # Workflows
+  saveWorkflow(input: SaveWorkflowInput!): Workflow!
+  deleteWorkflow(id: ID!): Boolean!
+
+  # Runs & Re-run from Node
+  startRun(input: StartRunInput!): Run!
+  rerunFromNode(input: RerunFromNodeInput!): Run!
+  cancelRun(runId: ID!, reason: String): Run!
+
+  # ★1 Template Library
+  publishTemplate(input: PublishTemplateInput!): WorkflowTemplate!
+  cloneTemplate(input: CloneTemplateInput!): Workflow!
+
+  # ★2 CI/CD Config Generator
+  generateCiConfig(input: GenerateCiConfigInput!): GeneratedCiConfig!
+
+  # ★3 Text-to-Workflow (Preview Only)
+  generateWorkflowFromText(input: GenerateWorkflowFromTextInput!): GeneratedWorkflowPreview!
+
+  # Secrets & Scoped Tokens
+  createSecret(input: CreateSecretInput!): SecretMetadata!
+  deleteSecret(secretRef: ID!): Boolean!
+  createScopedToken(input: CreateScopedTokenInput!): CreatedScopedToken!
+  revokeScopedToken(tokenId: ID!): Boolean!
+
+  # Outbound MCP Connections
+  registerMcpConnection(input: RegisterMCPConnectionInput!): MCPConnection!
+  updateMcpConnection(input: UpdateMCPConnectionInput!): MCPConnection!
+  deleteMcpConnection(id: ID!): Boolean!
+  testMcpConnection(id: ID!): MCPConnectionTestResult!
+}
+
+type Subscription {
+  """
+  Live Run events backed by PostgreSQL run_events + LISTEN/NOTIFY.
+  Pass afterSeq (last received seqId) on reconnect for zero-loss replay.
+  """
+  runEvents(runId: ID!, afterSeq: BigInt = 0): RunEvent!
+
+  """
+  Live hot-plug updates when an external sandbox Plugin connects, updates, or goes offline.
+  Allows UI node palette to refresh instantly without reloading or restarting core services.
+  """
+  pluginRegistryEvents: PluginRegistryEvent!
+
+  """Live stream for the built-in local Webhook Inspector (dev/demo)."""
+  webhookInspectorEvents(channelKey: String!): WebhookInspectorDelivery!
+}

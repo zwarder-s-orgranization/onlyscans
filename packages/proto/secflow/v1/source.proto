@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package secflow.v1;
+
+import "google/protobuf/timestamp.proto";
+import "secflow/v1/common.proto";
+
+// SourceIngesterService centralizes repository allowlist enforcement, SSRF/DNS-rebinding
+// protection, zip-slip/zip-bomb validation, and content-addressed packaging into Garage
+// (secflow-sources/{sha256}.tar.gz). Runs ONCE per Run before any analyzer node starts so
+// analyzer workers operate with zero internet egress.
+service SourceIngesterService {
+  // Validates allowlist + SSRF/DNS rebinding, fetches git repository + ref, normalizes and
+  // uploads tar.gz to Garage, returning SourceRef.
+  rpc IngestGit(IngestGitRequest) returns (IngestGitResponse);
+
+  // Validates uploaded ZIP bytes from edge-gateway POST /upload (zip-slip, symlinks, zip-bomb),
+  // normalizes to tar.gz in Garage (secflow-sources/{sha256}.tar.gz), and returns SourceRef.
+  rpc IngestUpload(IngestUploadRequest) returns (IngestUploadResponse);
+
+  // Looks up metadata for an already-ingested source snapshot by source_id.
+  rpc GetSource(GetSourceRequest) returns (GetSourceResponse);
+
+  // Pre-run check used by WorkflowService.ValidateWorkflow and UI inline validation.
+  rpc CheckRepoAllowlist(CheckRepoAllowlistRequest) returns (CheckRepoAllowlistResponse);
+}
+
+enum AllowlistRejectionCode {
+  ALLOWLIST_REJECTION_CODE_UNSPECIFIED = 0;
+  ALLOWLIST_REJECTION_CODE_SCHEME_NOT_HTTPS = 1;
+  ALLOWLIST_REJECTION_CODE_HOST_NOT_ALLOWLISTED = 2;
+  ALLOWLIST_REJECTION_CODE_SSRF_PRIVATE_IP = 3;
+  ALLOWLIST_REJECTION_CODE_DNS_REBINDING = 4;
+}
+
+message IngestGitRequest {
+  string run_id = 1;
+  string node_run_id = 2;
+  string node_id = 3;
+  string repo_url = 4;                   // Must be https:// and match organizer/educational allowlist
+  string git_ref = 5;                    // Branch, tag, or commit SHA
+  string auth_secret_ref = 6;            // Optional scoped git token secret_ref bound to source.git node
+  string task_lease_token = 7;           // Orchestrator-signed lease token for SecretService.ResolveScopedSecret
+  string traceparent = 8;
+}
+
+message IngestGitResponse {
+  SourceRef source_ref = 1;
+  bool deduplicated_hit = 2;             // True if identical sha256 snapshot already existed in Garage
+  google.protobuf.Timestamp ingested_at = 3;
+}
+
+message IngestUploadRequest {
+  ActorContext actor = 1;
+  string filename = 2;
+  string repo_name = 3;                  // Optional display name
+  bytes archive_zip = 4;                 // Raw ZIP bytes validated for zip-slip & zip-bomb limits
+}
+
+message IngestUploadResponse {
+  SourceRef source_ref = 1;
+  bool deduplicated_hit = 2;
+  google.protobuf.Timestamp ingested_at = 3;
+}
+
+message GetSourceRequest {
+  ActorContext actor = 1;
+  string source_id = 2;
+}
+
+message GetSourceResponse {
+  SourceRef source_ref = 1;
+  google.protobuf.Timestamp ingested_at = 2;
+}
+
+message CheckRepoAllowlistRequest {
+  ActorContext actor = 1;
+  string repo_url = 2;
+}
+
+message CheckRepoAllowlistResponse {
+  bool allowed = 1;
+  AllowlistRejectionCode rejection_code = 2;
+  string reason = 3;
+}

@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package secflow.v1;
+
+import "google/protobuf/timestamp.proto";
+import "secflow/v1/common.proto";
+
+// AIService exposes interactive ★3 Text-to-Workflow preview generation and
+// provider/audit introspection. Note: ai.explain executes as a Pull Plugin via
+// WorkerService and NEVER detects vulnerabilities or calls MCP tools autonomously.
+service AIService {
+  // ★3 Text -> Workflow preview. Validates generated DAG against live PluginRegistry
+  // and Workflow JSON Schema; NEVER populates secrets or auto-executes the workflow.
+  rpc GenerateWorkflow(GenerateWorkflowRequest) returns (GenerateWorkflowResponse);
+
+  // Returns active LLM provider configuration (Cloud OpenAI-compatible vs local Ollama/vLLM)
+  // so UI displays an explicit closed-loop / cloud badge.
+  rpc GetProviderStatus(GetProviderStatusRequest) returns (GetProviderStatusResponse);
+
+  // Auditor view of LLM invocations (model, prompt hash, tokens, latency, quality; zero raw code/secrets).
+  rpc ListAuditLogs(ListAuditLogsRequest) returns (ListAuditLogsResponse);
+}
+
+enum AIOperation {
+  AI_OPERATION_UNSPECIFIED = 0;
+  AI_OPERATION_AI_EXPLAIN = 1;
+  AI_OPERATION_GENERATE_WORKFLOW = 2;
+}
+
+message GenerateWorkflowRequest {
+  ActorContext actor = 1;
+  string prompt = 2;                     // Russian or English natural-language description
+  string locale = 3;                     // "ru" | "en" (default "ru")
+}
+
+message GenerateWorkflowResponse {
+  string suggested_name = 1;
+  string suggested_description = 2;
+  string rationale = 3;
+  WorkflowGraph graph = 4;               // Guaranteed Trigger -> Source -> ... structure, zero secrets
+  repeated ValidationIssue missing_fields = 5; // Inline highlights for user to fill before running
+  string model_id = 6;
+  AIProviderMode provider_mode = 7;
+}
+
+message GetProviderStatusRequest {
+  ActorContext actor = 1;
+}
+
+message GetProviderStatusResponse {
+  AIProviderMode provider_mode = 1;
+  string model_id = 2;
+  string endpoint_host = 3;              // Sanitized host only (never API key)
+  bool closed_loop = 4;                  // True when running against local Ollama/vLLM
+  PrivacyMode default_privacy_mode = 5;
+  bool healthy = 6;
+}
+
+message AIAuditLogEntry {
+  string id = 1;
+  string run_id = 2;
+  string node_run_id = 3;
+  AIOperation operation = 4;
+  string model_id = 5;
+  AIProviderMode provider_mode = 6;
+  PrivacyMode privacy_mode = 7;
+  string prompt_hash = 8;                // SHA-256 of prompt template + inputs (no raw secrets/code)
+  int32 tokens_in = 9;
+  int32 tokens_out = 10;
+  int64 latency_ms = 11;
+  AIQuality quality = 12;
+  int32 stripped_hallucinated_advisories = 13;
+  bool cache_hit = 14;
+  google.protobuf.Timestamp created_at = 15;
+}
+
+message ListAuditLogsRequest {
+  ActorContext actor = 1;
+  string run_id = 2;                     // Optional filter
+  PageRequest page = 3;
+}
+
+message ListAuditLogsResponse {
+  repeated AIAuditLogEntry entries = 1;
+  PageInfo page_info = 2;
+}

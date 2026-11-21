@@ -1,0 +1,31 @@
+version: v2
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/secflow/secflow/packages/proto/gen/go
+    - file_option: java_package_prefix
+      value: io.secflow.proto
+    - file_option: java_multiple_files
+      value: true
+plugins:
+  # Go (edge-gateway, orchestrator, worker-sca, sbom-service, ai-service, notify-service, mcp-bridge)
+  - remote: buf.build/protocolbuffers/go:v1.36.5
+    out: gen/go
+    opt:
+      - paths=source_relative
+  - remote: buf.build/grpc/go:v1.5.1
+    out: gen/go
+    opt:
+      - paths=source_relative
+      - require_unimplemented_servers=true
+
+  # Kotlin / JVM 21 (worker-kotlin: scan.secrets + scan.sast.kotlin)
+  - remote: buf.build/protocolbuffers/java:v29.3
+    out: gen/kotlin
+  - remote: buf.build/protocolbuffers/kotlin:v29.3
+    out: gen/kotlin
+  - remote: buf.build/grpc/java:v1.70.0
+    out: gen/kotlin
+  - remote: buf.build/grpc/kotlin:v1.4.1
+    out: gen/kotlin

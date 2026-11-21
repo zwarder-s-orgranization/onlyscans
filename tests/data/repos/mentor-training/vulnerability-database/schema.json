@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["formatVersion", "ecosystem", "versionFormat", "snapshot", "vulnerabilities"],
+  "properties": {
+    "formatVersion": {"const": 1},
+    "ecosystem": {"const": "Maven"},
+    "versionFormat": {"const": "numeric-dot-separated"},
+    "snapshot": {
+      "type": "object",
+      "required": ["date", "url", "sha256", "advisories"],
+      "properties": {
+        "date": {"type": "string", "format": "date"},
+        "url": {"type": "string", "format": "uri"},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "advisories": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "vulnerabilities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "aliases", "group", "artifact", "ranges", "fixedVersions", "severity", "cvss", "sources"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$"},
+          "aliases": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+          "group": {"$ref": "#/$defs/coordinate"},
+          "artifact": {"$ref": "#/$defs/coordinate"},
+          "ranges": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/range"}},
+          "fixedVersions": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/version"}},
+          "severity": {"enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]},
+          "cvss": {
+            "type": "array",
+            "items": {"type": "object", "required": ["type", "score"], "properties": {
+              "type": {"type": "string"}, "score": {"type": "string"}
+            }, "additionalProperties": false}
+          },
+          "sources": {"type": "array", "minItems": 1, "items": {"type": "string", "format": "uri"}}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "coordinate": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+    "version": {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)*$"},
+    "range": {
+      "type": "object",
+      "required": ["lower", "lowerInclusive", "upper", "upperInclusive"],
+      "properties": {
+        "lower": {"anyOf": [{"$ref": "#/$defs/version"}, {"type": "null"}]},
+        "lowerInclusive": {"type": "boolean"},
+        "upper": {"$ref": "#/$defs/version"},
+        "upperInclusive": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

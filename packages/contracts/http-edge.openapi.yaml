@@ -1,0 +1,620 @@
+openapi: 3.1.0
+info:
+  title: SecFlow Edge Gateway — Thin HTTP Transport Contract
+  version: 1.0.0
+  description: |
+    Strictly scoped HTTP endpoints on `edge-gateway`.
+    Architectural invariant: Product CRUD is served EXCLUSIVELY via GraphQL (`/graphql`, `graphql-ws`)
+    and is NEVER duplicated in REST. This OpenAPI contract covers ONLY:
+    1. Binary uploads (`POST /upload`, `POST /catalogs/upload`)
+    2. Artifact downloads (`submission.json`, `sbom.cdx.json`, `report.md`, `report.html`)
+    3. Native Git webhooks (`POST /webhooks/git/{workflowId}`)
+    4. Inbound `SecFlow MCP Server` Streamable HTTP transport (`POST / GET /mcp`)
+    5. Local dev/demo Webhook Inspector sink (`POST /webhooks/inspector/{channelKey}`)
+    6. Kubernetes health probes (`GET /healthz`, `GET /readyz`)
+
+servers:
+  - url: https://secflow.local
+    description: Kubernetes Ingress TLS endpoint
+  - url: http://localhost:8080
+    description: Local development edge-gateway
+
+security:
+  - BearerAuth: []
+
+paths:
+  /upload:
+    post:
+      operationId: uploadSourceArchive
+      summary: Upload project ZIP archive to Source Ingester -> Garage
+      description: |
+        Accepts a project ZIP archive, forwards to `SourceIngesterService.IngestUpload`
+        which enforces zip-slip (`..`, absolute paths, symlinks), file-count, and
+        uncompressed-size limits (anti zip-bomb), normalizes to `.tar.gz`,
+        stores content-addressed in Garage (`secflow-sources/{sha256}.tar.gz`), and returns `sourceId`.
+        Required RBAC role: `editor` or `owner`.
+      parameters:
+        - $ref: '#/components/parameters/Traceparent'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  contentMediaType: application/zip
+                  description: ZIP archive of an organizer-provided or educational project.
+                repoName:
+                  type: string
+                  description: Optional display name for the uploaded project.
+      responses:
+        '201':
+          description: Archive validated and stored in Garage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadSourceResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          description: Archive exceeds compressed or uncompressed zip-bomb limit.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: Zip-slip traversal, symlink, or invalid archive structure rejected.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /catalogs/upload:
+    post:
+      operationId: uploadVulnerabilityCatalog
+      summary: Upload versioned Maven vulnerability catalog JSON to Garage (T2)
+      description: |
+        Validates JSON against `tests/data/repos/mentor-training/vulnerability-database/schema.json`,
+        uploads to Garage (`secflow-catalogs/{id}.json`), and registers in `CatalogService.RegisterCatalog`
+        so `scan.sca` can select it without rebuilding images.
+        Required RBAC role: `editor` or `owner`.
+      parameters:
+        - $ref: '#/components/parameters/Traceparent'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, name]
+              properties:
+                file:
+                  type: string
+                  contentMediaType: application/json
+                  description: UTF-8 JSON file conforming to mentor Maven vulnerability catalog schema.
+                name:
+                  type: string
+                  example: "Final Evaluation Catalog 2026"
+                setAsDefault:
+                  type: boolean
+                  default: false
+      responses:
+        '201':
+          description: Catalog validated and stored in Garage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogUploadResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: Catalog failed JSON Schema validation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /runs/{runId}/submission.json:
+    get:
+      operationId: downloadSubmissionReport
+      summary: Download mandatory UTF-8 Submission Report JSON
+      description: |
+        Returns the exact UTF-8 JSON report built exclusively from the immutable
+        `Run Findings` ledger, strictly conforming to `tests/data/repos/mentor-training/docs/submission-format.md`.
+        Branch-local `Envelope` filtering (`logic.filter`/`logic.regex`), LLM prose, and SBOM
+        components NEVER alter or pollute this file.
+        Allowed: JWT (`viewer`|`editor`|`owner`) or scoped token (`ci:readRun` | `mcp:read`).
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - $ref: '#/components/parameters/Traceparent'
+      responses:
+        '200':
+          description: Canonical UTF-8 submission JSON (`{"findings": [...]}`).
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+                example: 'attachment; filename="submission-{runId}.json"'
+            X-SecFlow-Sha256:
+              schema:
+                type: string
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: './schemas/submission-report.schema.json'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /runs/{runId}/sbom.cdx.json:
+    get:
+      operationId: downloadSbomCycloneDx
+      summary: Download CycloneDX 1.6 JSON SBOM for a Run
+      description: |
+        Streams the CycloneDX 1.6 SBOM generated by `sbom-service` from Garage (`secflow-sbom/{runId}.cdx.json`).
+        Allowed: JWT (`viewer`|`editor`|`owner`) or scoped token (`ci:readRun` | `mcp:read`).
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - $ref: '#/components/parameters/Traceparent'
+      responses:
+        '200':
+          description: CycloneDX 1.6 JSON document.
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+                example: 'attachment; filename="sbom-{runId}.cdx.json"'
+          content:
+            application/vnd.cyclonedx+json; charset=utf-8:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /runs/{runId}/report.md:
+    get:
+      operationId: downloadReadableReportMarkdown
+      summary: Download algorithmic human-readable Markdown report
+      description: |
+        Algorithmically rendered from authoritative `Run Findings` + grounded `AIReport`.
+        Guaranteed to contain the exact same set of findings as `submission.json`.
+        Allowed: JWT (`viewer`|`editor`|`owner`) or scoped token (`ci:readRun` | `mcp:read`).
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - $ref: '#/components/parameters/Traceparent'
+      responses:
+        '200':
+          description: Synchronized Markdown report.
+          content:
+            text/markdown; charset=utf-8:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /runs/{runId}/report.html:
+    get:
+      operationId: downloadReadableReportHtml
+      summary: Download algorithmic human-readable HTML report
+      description: |
+        Algorithmically rendered standalone HTML report from authoritative `Run Findings` + grounded `AIReport`.
+        Allowed: JWT (`viewer`|`editor`|`owner`) or scoped token (`ci:readRun` | `mcp:read`).
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - $ref: '#/components/parameters/Traceparent'
+      responses:
+        '200':
+          description: Synchronized standalone HTML report.
+          content:
+            text/html; charset=utf-8:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhooks/git/{workflowId}:
+    post:
+      operationId: receiveGitWebhook
+      summary: Native GitHub / GitLab push & PR/MR webhook trigger (★2)
+      security: []
+      description: |
+        Resolves the `webhookSecret` bound to the workflow's `trigger.webhook` node via
+        `SecretService.ResolveScopedSecret(WorkflowWebhookSecretScope)`, verifies HMAC signature
+        (`X-Hub-Signature-256` for GitHub) or secret token (`X-Gitlab-Token` for GitLab),
+        checks repository URL against `source-ingester` allowlist, extracts `$trigger.repoUrl`,
+        `$trigger.branch`, `$trigger.commitSha`, `$trigger.prNumber`, and `$trigger.commitStatusUrl`,
+        and starts a `Run` via `RunService.StartRunFromWebhook`.
+        GitHub `ping` events are acknowledged with `200 OK`. Duplicate delivery IDs return `409 Conflict`.
+      parameters:
+        - $ref: '#/components/parameters/Traceparent'
+        - name: workflowId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-Hub-Signature-256
+          in: header
+          required: false
+          description: GitHub HMAC-SHA256 signature (`sha256=...`)
+          schema:
+            type: string
+        - name: X-GitHub-Event
+          in: header
+          required: false
+          schema:
+            type: string
+            enum: [ping, push, pull_request]
+        - name: X-GitHub-Delivery
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: X-Gitlab-Token
+          in: header
+          required: false
+          description: GitLab webhook secret token
+          schema:
+            type: string
+        - name: X-Gitlab-Event
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: GitHub ping event verified and acknowledged.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    const: true
+        '202':
+          description: Webhook verified and Run enqueued.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runId, workflowId, status]
+                properties:
+                  runId:
+                    type: string
+                  workflowId:
+                    type: string
+                  status:
+                    type: string
+                    example: QUEUED
+        '401':
+          description: Invalid or missing webhook HMAC signature / token.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          description: Repository URL is not in the SecFlow allowlist.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          description: Orchestrator queue backpressure limit exceeded.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /mcp:
+    post:
+      operationId: mcpStreamableHttpPost
+      summary: Inbound SecFlow MCP Server (Streamable HTTP JSON-RPC 2.0)
+      description: |
+        Streamable HTTP endpoint for IDE and AI agent clients (Cursor, Claude Code,
+        Antigravity, VS Code). Enforces identical RBAC, scoped tokens (`mcp:read`, `mcp:run`,
+        `mcp:write`), and repository allowlists. Translates calls strictly to internal gRPC.
+        Full tool & resource contract: `packages/contracts/mcp-contract.md`.
+      parameters:
+        - $ref: '#/components/parameters/Traceparent'
+        - name: Mcp-Session-Id
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jsonrpc, method]
+              properties:
+                jsonrpc:
+                  const: "2.0"
+                id:
+                  oneOf: [{ type: string }, { type: integer }]
+                method:
+                  type: string
+                params:
+                  type: object
+      responses:
+        '200':
+          description: JSON-RPC response or SSE stream.
+          content:
+            application/json:
+              schema:
+                type: object
+            text/event-stream:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    get:
+      operationId: mcpStreamableHttpGet
+      summary: Inbound SecFlow MCP Server SSE stream (Streamable HTTP)
+      parameters:
+        - $ref: '#/components/parameters/Traceparent'
+        - name: Mcp-Session-Id
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Server-Sent Events stream for MCP notifications.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /webhooks/inspector/{channelKey}:
+    post:
+      operationId: receiveInspectorWebhook
+      summary: Local dev/demo Webhook Inspector sink (T6 offline resilience)
+      security: []
+      description: |
+        Enabled in dev/demo profiles to receive `notify.webhook` HTTP POST deliveries,
+        optionally verify `X-SecFlow-Signature-256`, persist in Redis/PG, and push live
+        to the UI Webhook Inspector via GraphQL `webhookInspectorEvents`.
+      parameters:
+        - $ref: '#/components/parameters/Traceparent'
+        - name: channelKey
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9_-]{4,64}$'
+        - name: X-SecFlow-Signature-256
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Delivery recorded for UI inspection.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deliveryId, receivedAt]
+                properties:
+                  deliveryId:
+                    type: string
+                  receivedAt:
+                    type: string
+                    format: date-time
+
+  /healthz:
+    get:
+      operationId: livenessProbe
+      summary: Kubernetes liveness probe
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    const: ok
+
+  /readyz:
+    get:
+      operationId: readinessProbe
+      summary: Kubernetes readiness probe (PostgreSQL + Orchestrator gRPC + active Worker stream)
+      security: []
+      responses:
+        '200':
+          description: Gateway is ready to serve traffic.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, checks]
+                properties:
+                  status:
+                    const: ready
+                  checks:
+                    type: object
+                    properties:
+                      postgres: { type: string }
+                      orchestratorGrpc: { type: string }
+                      garage: { type: string }
+                      activeWorkerStreams: { type: integer }
+        '503':
+          description: One or more critical dependencies are unavailable.
+          content:
+            application/json:
+              schema:
+                type: object
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT or SecFlow Scoped Token
+
+  parameters:
+    RunId:
+      name: runId
+      in: path
+      required: true
+      schema:
+        type: string
+    Traceparent:
+      name: traceparent
+      in: header
+      required: false
+      description: W3C Trace Context header (`00-<trace-id>-<span-id>-<flags>`)
+      schema:
+        type: string
+
+  schemas:
+    UploadSourceResponse:
+      type: object
+      required: [sourceId, sha256, repoName, sizeBytes, fileCount, deduplicatedHit]
+      properties:
+        sourceId:
+          type: string
+        sha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        repoName:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+        fileCount:
+          type: integer
+        deduplicatedHit:
+          type: boolean
+
+    CatalogUploadResponse:
+      type: object
+      required: [id, name, sha256, snapshotDate, advisoryCount, isDefault]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        sha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        snapshotDate:
+          type: string
+          format: date
+        advisoryCount:
+          type: integer
+        isDefault:
+          type: boolean
+
+    ProblemDetails:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - UNAUTHENTICATED
+            - FORBIDDEN
+            - SECRET_SCOPE_DENIED
+            - ALLOWLIST_DENIED
+            - DENYLIST_BLOCKED
+            - VALIDATION_FAILED
+            - ZIP_SLIP_DETECTED
+            - ZIP_BOMB_DETECTED
+            - NOT_FOUND
+            - CONFLICT
+            - RATE_LIMITED
+            - INTERNAL
+        message:
+          type: string
+        traceId:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    Unauthorized:
+      description: Missing or invalid authentication token.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    Forbidden:
+      description: Insufficient RBAC role, scope, or repository not allowlisted.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    NotFound:
+      description: Requested resource not found.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    Conflict:
+      description: Duplicate webhook delivery idempotency key or optimistic concurrency conflict.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'

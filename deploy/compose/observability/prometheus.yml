@@ -1,0 +1,34 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: secflow-edge-gateway
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["edge-gateway:8080"]
+
+  - job_name: secflow-orchestrator
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["orchestrator:8081"]
+
+  - job_name: secflow-source-ingester
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["source-ingester:8082"]
+
+  - job_name: secflow-ai-service
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["ai-service:8086"]
+
+  - job_name: secflow-notify-service
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["notify-service:8087"]
+
+  - job_name: secflow-mcp-bridge
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["mcp-bridge:8088"]

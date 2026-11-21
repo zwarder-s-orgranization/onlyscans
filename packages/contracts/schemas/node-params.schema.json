@@ -1,0 +1,350 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://secflow.local/schemas/node-params.schema.json",
+  "title": "SecFlow Built-in Node Parameter Schemas (Visual Rule Builder & Core Plugins)",
+  "description": "Canonical JSON Schema Draft 2020-12 parameter definitions shared between Frontend Inspector (visual rule builder + auto-generated forms), orchestrator (WorkflowService.ValidateWorkflow & DAG execution), and ★3 AIService.GenerateWorkflow.",
+  "$defs": {
+    "severity": {
+      "type": "string",
+      "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    },
+    "findingCategory": {
+      "type": "string",
+      "enum": ["SECRET", "SAST", "SCA"]
+    },
+    "ruleCondition": {
+      "type": "object",
+      "required": ["field", "operator", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "type": "string",
+          "enum": [
+            "stats.total",
+            "stats.newCount",
+            "stats.critical",
+            "stats.high",
+            "stats.medium",
+            "stats.low",
+            "stats.secretCount",
+            "stats.sastCount",
+            "stats.scaCount",
+            "stats.maxSeverity",
+            "gate.status",
+            "trigger.branch"
+          ]
+        },
+        "operator": {
+          "type": "string",
+          "enum": ["eq", "neq", "gt", "gte", "lt", "lte", "in", "contains"]
+        },
+        "value": {
+          "type": ["string", "number", "boolean", "array"]
+        }
+      }
+    },
+    "trigger.manual": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string", "maxLength": 300 }
+      }
+    },
+    "trigger.schedule": {
+      "type": "object",
+      "required": ["cron"],
+      "additionalProperties": false,
+      "properties": {
+        "cron": {
+          "type": "string",
+          "minLength": 9,
+          "description": "Standard 5-field cron expression (e.g. '0 14 * * *')."
+        },
+        "timezone": { "type": "string", "default": "UTC" },
+        "enabled": { "type": "boolean", "default": true }
+      }
+    },
+    "trigger.webhook": {
+      "type": "object",
+      "required": ["gitProvider"],
+      "additionalProperties": false,
+      "properties": {
+        "gitProvider": { "type": "string", "enum": ["GITHUB", "GITLAB"] },
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "default": ["push", "pull_request"],
+          "items": { "type": "string", "enum": ["push", "pull_request", "merge_request"] }
+        },
+        "branchFilter": {
+          "type": "string",
+          "description": "Optional glob pattern restricting target branches (e.g. 'main', 'release/*')."
+        },
+        "reportCommitStatus": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, orchestrator calls NotifyService.SendCommitStatus (pending -> success/failure) using gitStatusToken secret binding."
+        },
+        "commitStatusContext": {
+          "type": "string",
+          "default": "secflow/security-gate"
+        }
+      }
+    },
+    "source.upload": {
+      "type": "object",
+      "required": ["sourceId"],
+      "additionalProperties": false,
+      "properties": {
+        "sourceId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "source.git": {
+      "type": "object",
+      "required": ["repoUrl"],
+      "additionalProperties": false,
+      "properties": {
+        "repoUrl": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Allowlisted HTTPS Git URL or safe template expression such as '{{ $trigger.repoUrl }}'."
+        },
+        "gitRef": {
+          "type": "string",
+          "default": "main",
+          "description": "Branch, tag, commit SHA, or '{{ $trigger.commitSha }}'."
+        }
+      }
+    },
+    "scan.secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "includePaths": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "excludePaths": { "type": "array", "items": { "type": "string" }, "default": [] }
+      }
+    },
+    "scan.sca": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "catalogId": {
+          "type": "string",
+          "default": "default",
+          "description": "Versioned Maven catalog ID from CatalogService (Garage secflow-catalogs/*)."
+        }
+      }
+    },
+    "scan.sast.kotlin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabledRules": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "sql-injection",
+              "tls-verification",
+              "credentialed-cors",
+              "route-authorization",
+              "object-authorization"
+            ]
+          }
+        }
+      }
+    },
+    "sbom.generate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "includeDevDependencies": { "type": "boolean", "default": false }
+      }
+    },
+    "logic.if": {
+      "type": "object",
+      "required": ["combinator", "conditions"],
+      "additionalProperties": false,
+      "properties": {
+        "combinator": { "type": "string", "enum": ["AND", "OR"], "default": "AND" },
+        "conditions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/ruleCondition" }
+        }
+      }
+    },
+    "logic.switch": {
+      "type": "object",
+      "required": ["mode"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["maxSeverity", "category"],
+          "default": "maxSeverity",
+          "description": "maxSeverity routes to CRITICAL|HIGH|MEDIUM_LOW|CLEAN; category routes to SECRET|SAST|SCA|CLEAN."
+        }
+      }
+    },
+    "logic.compare": {
+      "type": "object",
+      "required": ["mode"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["baselineDiff", "threshold"],
+          "default": "baselineDiff"
+        },
+        "baselineScope": {
+          "type": "string",
+          "enum": ["previous_run", "previous_succeeded_run"],
+          "default": "previous_succeeded_run"
+        },
+        "minNewFindingsForTrue": { "type": "integer", "minimum": 1, "default": 1 },
+        "minSeverity": { "$ref": "#/$defs/severity" }
+      }
+    },
+    "logic.filter": {
+      "type": "object",
+      "description": "Branch-local Envelope filter (NEVER alters authoritative Run Findings / submission.json).",
+      "additionalProperties": false,
+      "properties": {
+        "categories": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/findingCategory" }
+        },
+        "minSeverity": { "$ref": "#/$defs/severity" },
+        "onlyNewVsBaseline": { "type": "boolean", "default": false },
+        "findingClasses": { "type": "array", "items": { "type": "string" } },
+        "pathPrefixes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "logic.regex": {
+      "type": "object",
+      "required": ["field", "pattern"],
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "type": "string",
+          "enum": ["path", "class", "advisoryId", "description", "group", "artifact"],
+          "default": "path"
+        },
+        "pattern": { "type": "string", "minLength": 1, "description": "RE2-compatible regular expression." },
+        "splitEnvelope": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, emits matching findings to 'match' handle and non-matching findings to 'nomatch' handle."
+        }
+      }
+    },
+    "logic.merge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "deduplicateByFingerprint": { "type": "boolean", "default": true }
+      }
+    },
+    "gate.policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "failOnSeverity": { "$ref": "#/$defs/severity", "default": "HIGH" },
+        "warnOnSeverity": { "$ref": "#/$defs/severity", "default": "MEDIUM" },
+        "failOnAnySecret": { "type": "boolean", "default": true },
+        "maxAllowedFindings": { "type": "integer", "minimum": 0 },
+        "onlyNewVsBaseline": { "type": "boolean", "default": false }
+      }
+    },
+    "ai.explain": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseUrl": {
+          "type": "string",
+          "minLength": 1,
+          "description": "LLM API base URL configured on the node (e.g. 'https://api.openai.com/v1', 'https://openrouter.ai/api/v1', or 'http://ollama:11434')."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "LLM model identifier configured on the node (e.g. 'gpt-4o-mini', 'llama3.2')."
+        },
+        "privacyMode": {
+          "type": "string",
+          "enum": ["REDACTED_SNIPPET", "METADATA_ONLY"],
+          "default": "REDACTED_SNIPPET"
+        },
+        "locale": { "type": "string", "enum": ["ru", "en"], "default": "ru" },
+        "maxFindings": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }
+      }
+    },
+    "report.export": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string", "default": "SecFlow Security Report" },
+        "notes": { "type": "string", "default": "" },
+        "formats": {
+          "type": "array",
+          "minItems": 1,
+          "default": ["MARKDOWN", "HTML"],
+          "items": { "type": "string", "enum": ["MARKDOWN", "HTML"] }
+        }
+      }
+    },
+    "notify.telegram": {
+      "type": "object",
+      "required": ["chatId"],
+      "additionalProperties": false,
+      "properties": {
+        "chatId": { "type": "string", "minLength": 1 },
+        "messageTemplate": { "type": "string" }
+      }
+    },
+    "notify.webhook": {
+      "type": "object",
+      "required": ["url"],
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string", "minLength": 1 },
+        "bodyTemplate": { "type": "string" }
+      }
+    },
+    "notify.smtp": {
+      "type": "object",
+      "required": ["to", "subject"],
+      "additionalProperties": false,
+      "properties": {
+        "to": { "type": "array", "minItems": 1, "items": { "type": "string", "format": "email" } },
+        "subject": { "type": "string", "minLength": 1 },
+        "bodyTemplate": { "type": "string" },
+        "smtpAddr": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional SMTP host:port override (defaults to container SMTP_ADDR)."
+        },
+        "smtpUser": {
+          "type": "string",
+          "description": "Optional SMTP username override (defaults to container SMTP_USER)."
+        },
+        "smtpFrom": {
+          "type": "string",
+          "description": "Optional From email address override (defaults to container SMTP_FROM)."
+        }
+      }
+    },
+    "mcp.tool": {
+      "type": "object",
+      "required": ["connectionId", "toolName", "arguments"],
+      "additionalProperties": false,
+      "properties": {
+        "connectionId": { "type": "string", "minLength": 1 },
+        "toolName": { "type": "string", "minLength": 1 },
+        "arguments": { "type": "object", "additionalProperties": true },
+        "outputVarKey": { "type": "string", "minLength": 1, "default": "mcpToolResult" }
+      }
+    }
+  }
+}

@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package secflow.v1;
+
+import "google/protobuf/timestamp.proto";
+import "secflow/v1/common.proto";
+
+// CatalogService manages versioned Maven vulnerability catalogs stored in Garage
+// (secflow-catalogs/*) for scan.sca without rebuilding container images (T2).
+service CatalogService {
+  rpc ListCatalogs(ListCatalogsRequest) returns (ListCatalogsResponse);
+  rpc GetCatalog(GetCatalogRequest) returns (GetCatalogResponse);
+  rpc RegisterCatalog(RegisterCatalogRequest) returns (RegisterCatalogResponse);
+}
+
+message VulnerabilityCatalog {
+  string id = 1;                         // e.g. "default" or UUID
+  string name = 2;
+  string ecosystem = 3;                  // "Maven"
+  string version_format = 4;             // "numeric-dot-separated"
+  string bucket = 5;                     // "secflow-catalogs"
+  string s3_key = 6;                     // e.g. "default.json" or "{id}.json"
+  string sha256 = 7;
+  string snapshot_date = 8;              // YYYY-MM-DD from catalog.snapshot.date
+  int32 advisory_count = 9;
+  bool is_default = 10;
+  string uploaded_by = 11;
+  google.protobuf.Timestamp created_at = 12;
+}
+
+message ListCatalogsRequest {
+  ActorContext actor = 1;
+}
+
+message ListCatalogsResponse {
+  repeated VulnerabilityCatalog catalogs = 1;
+}
+
+message GetCatalogRequest {
+  ActorContext actor = 1;
+  string catalog_id = 2;
+}
+
+message GetCatalogResponse {
+  VulnerabilityCatalog catalog = 1;
+}
+
+message RegisterCatalogRequest {
+  ActorContext actor = 1;
+  string name = 2;
+  string bucket = 3;
+  string s3_key = 4;
+  string sha256 = 5;
+  string snapshot_date = 6;
+  int32 advisory_count = 7;
+  bool set_as_default = 8;
+}
+
+message RegisterCatalogResponse {
+  VulnerabilityCatalog catalog = 1;
+}

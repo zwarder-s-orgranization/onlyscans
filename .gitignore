@@ -1,0 +1,15 @@
+# Standard build / environment artifacts
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+.next/
+*.tsbuildinfo
+.gradle/
+build/
+dist/
+target/
+.env
+.env.local
+.DS_Store
+Thumbs.db

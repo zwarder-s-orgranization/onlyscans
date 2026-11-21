@@ -1,0 +1,125 @@
+syntax = "proto3";
+
+package secflow.v1;
+
+import "google/protobuf/timestamp.proto";
+import "secflow/v1/common.proto";
+
+// MCPRegistryService manages allowlisted Outbound Streamable HTTP MCP Connections
+// (ADR-0003, T10) and exposes live tools/list + inputSchema discovery for the
+// deterministic mcp.tool node in the Workflow UI.
+// Enforces a hard deny-list blocking prohibited security scanners (semgrep, gitleaks, trivy, etc.).
+service MCPRegistryService {
+  rpc RegisterConnection(RegisterConnectionRequest) returns (RegisterConnectionResponse);
+  rpc UpdateConnection(UpdateConnectionRequest) returns (UpdateConnectionResponse);
+  rpc DeleteConnection(DeleteConnectionRequest) returns (DeleteConnectionResponse);
+  rpc ListConnections(ListConnectionsRequest) returns (ListConnectionsResponse);
+  rpc GetConnection(GetConnectionRequest) returns (GetConnectionResponse);
+
+  // Calls tools/list on the external Streamable HTTP MCP server via mcp-bridge,
+  // applies allowlist & scanner deny-list filters, and returns tool inputSchemas for UI.
+  rpc ListConnectionTools(ListConnectionToolsRequest) returns (ListConnectionToolsResponse);
+
+  // Verifies connectivity, SSRF allowlist, auth secret, and MCP initialize handshake.
+  rpc TestConnection(TestConnectionRequest) returns (TestConnectionResponse);
+}
+
+// Reusable configuration block shared across MCPConnection, RegisterConnectionRequest,
+// and UpdateConnectionRequest (eliminates field duplication).
+message MCPConnectionConfig {
+  string name = 1;
+  string description = 2;
+  string endpoint_url = 3;               // Allowlisted Streamable HTTP endpoint
+  string auth_secret_ref = 4;            // Optional SecretStore reference (never raw token)
+  string auth_header_name = 5;           // Default "Authorization"
+  repeated string allowed_tools = 6;     // Optional explicit tool allowlist (empty = all non-denied)
+  repeated string denied_tools = 7;      // Additional connection-level deny patterns (global scanner deny-list always applies)
+}
+
+message MCPConnection {
+  string id = 1;
+  MCPConnectionConfig config = 2;
+  bool enabled = 3;
+  string created_by = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+message MCPToolDescriptor {
+  string name = 1;
+  string description = 2;
+  bytes input_schema_json = 3;           // JSON Schema from MCP tools/list -> auto-generates mcp.tool form in UI
+}
+
+message RegisterConnectionRequest {
+  ActorContext actor = 1;
+  MCPConnectionConfig config = 2;
+}
+
+message RegisterConnectionResponse {
+  MCPConnection connection = 1;
+}
+
+message UpdateConnectionRequest {
+  ActorContext actor = 1;
+  string connection_id = 2;
+  MCPConnectionConfig config = 3;
+  bool enabled = 4;
+}
+
+message UpdateConnectionResponse {
+  MCPConnection connection = 1;
+}
+
+message DeleteConnectionRequest {
+  ActorContext actor = 1;
+  string connection_id = 2;
+}
+
+message DeleteConnectionResponse {
+  bool deleted = 1;
+}
+
+message ListConnectionsRequest {
+  ActorContext actor = 1;
+}
+
+message ListConnectionsResponse {
+  repeated MCPConnection connections = 1;
+}
+
+message GetConnectionRequest {
+  ActorContext actor = 1;
+  string connection_id = 2;
+}
+
+message GetConnectionResponse {
+  MCPConnection connection = 1;
+}
+
+message ListConnectionToolsRequest {
+  ActorContext actor = 1;
+  string connection_id = 2;
+  bool force_refresh = 3;
+}
+
+message ListConnectionToolsResponse {
+  string connection_id = 1;
+  repeated MCPToolDescriptor tools = 2;  // Only allowlisted, non-denied tools returned for selection
+  int32 blocked_tool_count = 3;
+  google.protobuf.Timestamp fetched_at = 4;
+}
+
+message TestConnectionRequest {
+  ActorContext actor = 1;
+  string connection_id = 2;
+}
+
+message TestConnectionResponse {
+  bool ok = 1;
+  string server_name = 2;
+  string server_version = 3;
+  int32 available_tool_count = 4;
+  int32 blocked_tool_count = 5;
+  string error_message = 6;
+}

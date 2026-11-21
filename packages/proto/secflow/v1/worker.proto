@@ -1,0 +1,237 @@
+syntax = "proto3";
+
+package secflow.v1;
+
+import "google/protobuf/timestamp.proto";
+import "secflow/v1/common.proto";
+
+// ============================================================================
+// Unified Pull Plugin Protocol (ADR-0001)
+//
+// EVERY built-in and external worker (worker-kotlin, worker-sca, sbom-service,
+// ai-service, notify-service, mcp-bridge, and external secflow-sandbox plugins)
+// connects OUTBOUND as a gRPC client to orchestrator:50051.
+// Zero inbound ports or Kubernetes Services are required in secflow-sandbox.
+// ============================================================================
+
+service WorkerService {
+  // Long-lived bidirectional stream:
+  // 1. Worker sends RegisterManifest (handshake).
+  // 2. Orchestrator verifies scanner deny-list (blocks semgrep/gitleaks/trivy/detekt-security)
+  //    and replies with ManifestAck (accepted or rejected with reason).
+  // 3. Orchestrator pushes leased NodeTask messages (acquired via PG FOR UPDATE SKIP LOCKED)
+  //    carrying an orchestrator-signed task_lease_token for least-privilege SecretService access.
+  // 4. Worker sends Heartbeat to extend lease_until, optional TaskProgress, and CompleteTask
+  //    with idempotent node_run_id.
+  // 5. Orchestrator may send CancelTask (run cancelled / timeout) or DrainRequest.
+  rpc Connect(stream ConnectRequest) returns (stream ConnectResponse);
+}
+
+// PluginRegistryService serves registered built-in + live connected plugins
+// (including hot-plugged external sandbox plugins) to edge-gateway / UI / AI.
+service PluginRegistryService {
+  rpc ListPlugins(ListPluginsRequest) returns (ListPluginsResponse);
+  rpc GetPlugin(GetPluginRequest) returns (GetPluginResponse);
+  // Server-stream emitting REGISTERED / UPDATED / OFFLINE events so UI palette
+  // updates in real time without restarting edge-gateway, orchestrator, or web.
+  rpc WatchPlugins(WatchPluginsRequest) returns (stream WatchPluginsResponse);
+}
+
+enum SandboxProfile {
+  SANDBOX_PROFILE_UNSPECIFIED = 0;
+  SANDBOX_PROFILE_ORCHESTRATOR_BUILTIN = 1;
+  SANDBOX_PROFILE_INTERNAL_ONLY = 2;    // Zero internet egress (analyzers, SBOM, external sandbox)
+  SANDBOX_PROFILE_EGRESS_EXTERNAL = 3;  // Allowlisted external egress (source-ingester, ai-service, notify-service, mcp-bridge)
+}
+
+enum ManifestRejectionCode {
+  MANIFEST_REJECTION_CODE_UNSPECIFIED = 0;
+  MANIFEST_REJECTION_CODE_DENYLIST_BLOCKED = 1;
+  MANIFEST_REJECTION_CODE_INVALID_SCHEMA = 2;
+  MANIFEST_REJECTION_CODE_DUPLICATE_PLUGIN_ID = 3;
+  MANIFEST_REJECTION_CODE_UNSUPPORTED_VERSION = 4;
+}
+
+message PortDefinition {
+  string id = 1;                         // e.g. "default", "true", "false", "CRITICAL"
+  string label = 2;
+  string description = 3;
+}
+
+message PluginManifest {
+  string plugin_id = 1;                  // e.g. "scan.secrets", "scan.spring-config"
+  string version = 2;                    // SemVer, e.g. "1.0.0"
+  string display_name = 3;
+  string description = 4;
+  PluginCategory category = 5;
+  repeated string capabilities = 6;      // e.g. ["analyzer"], ["sbom"], ["ai"], ["report"], ["notify"], ["mcp"]
+  bytes params_json_schema = 7;          // JSON Schema Draft 2020-12 -> auto-generates UI Inspector form
+  repeated PortDefinition input_ports = 8;
+  repeated PortDefinition output_ports = 9;
+  string runtime_language = 10;          // "go" | "kotlin-jvm" | "python" | etc.
+  SandboxProfile sandbox_profile = 11;
+  bool is_external = 12;                 // True for secflow-sandbox hot-plug containers
+  repeated string required_secret_keys = 13; // Logical param keys that must be bound via secret_bindings
+  int32 max_concurrency = 14;            // Max concurrent NodeTasks this worker instance can lease
+}
+
+message WorkerRegisterManifest {
+  string worker_instance_id = 1;         // Pod name / unique instance UUID
+  string namespace = 2;                  // e.g. "secflow-workers" | "secflow-sandbox"
+  repeated PluginManifest manifests = 3; // A single worker (e.g. worker-kotlin) may register multiple plugins
+}
+
+message WorkerHeartbeat {
+  string worker_instance_id = 1;
+  repeated string active_node_run_ids = 2; // Extends PG lease_until for all listed active tasks
+  int32 available_slots = 3;
+}
+
+message WorkerTaskProgress {
+  string node_run_id = 1;
+  int32 percent = 2;                     // 0..100
+  string status_message = 3;             // Safe redacted status line (no secrets/code)
+}
+
+message NodeTaskMetrics {
+  int64 duration_ms = 1;
+  int32 files_scanned = 2;
+  int64 bytes_processed = 3;
+  int32 tokens_in = 4;
+  int32 tokens_out = 5;
+}
+
+message NodeResult {
+  string node_run_id = 1;                // Idempotency key
+  string run_id = 2;
+  string node_id = 3;
+  string plugin_id = 4;
+  NodeRunStatus status = 5;              // NODE_RUN_STATUS_SUCCEEDED | NODE_RUN_STATUS_FAILED
+  repeated Finding findings = 6;         // New findings emitted by analyzer plugins (masked secrets!)
+  bytes envelope_patch_json = 7;         // Patch applied to branch Envelope: sbomRef / aiReport / vars / gate
+  repeated string active_output_ports = 8; // Default ["default"]; branching nodes return chosen handles
+  string payload_s3_key = 9;             // Optional large output artifact key in Garage
+  bytes redacted_preview_json = 10;      // Lightweight redacted preview for runEvents
+  string error_code = 11;
+  string error_message = 12;             // Redacted error message (never raw secrets)
+  NodeTaskMetrics metrics = 13;
+}
+
+message WorkerDrainNotice {
+  string worker_instance_id = 1;
+  string reason = 2;
+}
+
+message ConnectRequest {
+  oneof payload {
+    WorkerRegisterManifest register_manifest = 1;
+    WorkerHeartbeat heartbeat = 2;
+    WorkerTaskProgress task_progress = 3;
+    NodeResult complete_task = 4;
+    WorkerDrainNotice drain = 5;
+  }
+}
+
+message ManifestAck {
+  bool accepted = 1;
+  ManifestRejectionCode rejection_code = 2;
+  string rejection_reason = 3;
+  int64 heartbeat_interval_seconds = 4;  // Recommended heartbeat cadence (e.g. 10s)
+  int64 default_lease_seconds = 5;       // Default PG lease duration (e.g. 30s)
+}
+
+message NodeTask {
+  string run_id = 1;
+  string node_run_id = 2;                // Unique idempotency key for this attempt
+  string node_id = 3;
+  string plugin_id = 4;
+  bytes params_json = 5;                 // Resolved node parameters (safe {{ ... }} already evaluated)
+  bytes envelope_json = 6;               // Current branch-local Envelope JSON (sourceRef, findings, refs, stats)
+  repeated SecretBinding secret_bindings = 7; // paramKey -> secretRef ONLY bound to this node (least privilege)
+  string traceparent = 8;                // W3C Trace Context propagated end-to-end
+  int64 lease_seconds = 9;
+  int64 hard_timeout_seconds = 10;
+  int32 attempt = 11;
+  // Short-lived orchestrator-signed token bound to (run_id, node_run_id, node_id, plugin_id).
+  // Required by SecretService.ResolveScopedSecret so analyzer workers cannot impersonate another plugin_id.
+  // Always empty for analyzer/SBOM/external-sandbox plugins without granted secret access.
+  string task_lease_token = 12;
+}
+
+message CancelTask {
+  string node_run_id = 1;
+  string reason = 2;
+}
+
+message HeartbeatAck {
+  google.protobuf.Timestamp server_time = 1;
+  repeated string expired_node_run_ids = 2; // Tasks whose lease was lost and should be aborted locally
+}
+
+message DrainRequest {
+  string reason = 1;
+  int64 grace_period_seconds = 2;
+}
+
+message ConnectResponse {
+  oneof payload {
+    ManifestAck manifest_ack = 1;
+    NodeTask dispatch_task = 2;
+    CancelTask cancel_task = 3;
+    HeartbeatAck heartbeat_ack = 4;
+    DrainRequest drain_request = 5;
+  }
+}
+
+// ============================================================================
+// Plugin Registry Models
+// ============================================================================
+
+message RegisteredPlugin {
+  PluginManifest manifest = 1;
+  PluginStatus status = 2;
+  int32 active_workers = 3;
+  int64 queue_depth = 4;                 // Mirrors orchestrator_queue_depth{plugin_id}
+  google.protobuf.Timestamp registered_at = 5;
+  google.protobuf.Timestamp last_seen_at = 6;
+}
+
+message ListPluginsRequest {
+  ActorContext actor = 1;
+  PluginCategory category = 2;           // Optional filter
+  bool include_offline = 3;
+}
+
+message ListPluginsResponse {
+  repeated RegisteredPlugin plugins = 1;
+}
+
+message GetPluginRequest {
+  ActorContext actor = 1;
+  string plugin_id = 2;
+}
+
+message GetPluginResponse {
+  RegisteredPlugin plugin = 1;
+}
+
+message WatchPluginsRequest {
+  ActorContext actor = 1;
+}
+
+message WatchPluginsResponse {
+  PluginRegistryEvent event = 1;
+}
+
+enum PluginRegistryEventType {
+  PLUGIN_REGISTRY_EVENT_TYPE_UNSPECIFIED = 0;
+  PLUGIN_REGISTRY_EVENT_TYPE_REGISTERED = 1;
+  PLUGIN_REGISTRY_EVENT_TYPE_UPDATED = 2;
+  PLUGIN_REGISTRY_EVENT_TYPE_OFFLINE = 3;
+}
+
+message PluginRegistryEvent {
+  PluginRegistryEventType event_type = 1;
+  RegisteredPlugin plugin = 2;
+  google.protobuf.Timestamp occurred_at = 3;
+}

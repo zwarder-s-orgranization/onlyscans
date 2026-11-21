@@ -1,0 +1,230 @@
+// Package blobstore writes objects to Garage when credentials exist.
+// Without GARAGE_ENDPOINT and a key pair the call is a no-op.
+package blobstore
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+)
+
+var (
+	credMu        sync.Mutex
+	runtimeAccess string
+	runtimeSecret string
+	s3HTTPClient  = &http.Client{Timeout: 30 * time.Second}
+)
+
+func remember(access, secret string) {
+	credMu.Lock()
+	runtimeAccess, runtimeSecret = access, secret
+	credMu.Unlock()
+}
+
+func credPath() string {
+	if p := os.Getenv("GARAGE_CRED_FILE"); p != "" {
+		return p
+	}
+	return "/var/lib/secflow/garage.json"
+}
+
+func loadStored() (string, string, bool) {
+	raw, err := os.ReadFile(credPath())
+	if err != nil {
+		return "", "", false
+	}
+	var doc struct {
+		AccessKey string `json:"accessKey"`
+		SecretKey string `json:"secretKey"`
+	}
+	if json.Unmarshal(raw, &doc) != nil || doc.AccessKey == "" || doc.SecretKey == "" {
+		return "", "", false
+	}
+	return doc.AccessKey, doc.SecretKey, true
+}
+
+func saveCreds(access, secret string) error {
+	target := credPath()
+	dir := filepath.Dir(target)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create cred dir %s: %w", dir, err)
+	}
+	raw, err := json.Marshal(map[string]string{"accessKey": access, "secretKey": secret})
+	if err != nil {
+		return fmt.Errorf("marshal garage creds: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".garage-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp cred file: %w", err)
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	_ = tmp.Chmod(0o600)
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp cred file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp cred file: %w", err)
+	}
+	if err := os.Rename(tmpName, target); err != nil {
+		return fmt.Errorf("rename temp cred file: %w", err)
+	}
+	cleanup = false
+	return nil
+}
+
+// Configured reports whether Garage endpoint and credentials are available.
+func Configured() bool {
+	endpoint, access, secret := credentials()
+	return endpoint != "" && access != "" && secret != ""
+}
+
+func credentials() (endpoint, access, secret string) {
+	endpoint = strings.TrimRight(os.Getenv("GARAGE_ENDPOINT"), "/")
+	access = os.Getenv("GARAGE_ACCESS_KEY")
+	secret = os.Getenv("GARAGE_SECRET_KEY")
+	if access == "" || secret == "" {
+		credMu.Lock()
+		if access == "" {
+			access = runtimeAccess
+		}
+		if secret == "" {
+			secret = runtimeSecret
+		}
+		credMu.Unlock()
+	}
+	if access == "" || secret == "" {
+		if a, s, ok := loadStored(); ok {
+			remember(a, s)
+			if access == "" {
+				access = a
+			}
+			if secret == "" {
+				secret = s
+			}
+		}
+	}
+	return endpoint, access, secret
+}
+
+// Put stores body at bucket/key. Missing configuration is not an error.
+func Put(ctx context.Context, bucket, key string, body []byte) error {
+	resp, err := signed(ctx, http.MethodPut, bucket, key, body)
+	if err != nil || resp == nil {
+		return err
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("garage put %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return nil
+}
+
+// Get reads an object. Missing configuration returns a nil body and a nil error.
+func Get(ctx context.Context, bucket, key string) ([]byte, error) {
+	resp, err := signed(ctx, http.MethodGet, bucket, key, nil)
+	if err != nil || resp == nil {
+		return nil, err
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+		_ = resp.Body.Close()
+	}()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 80<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("garage get %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return raw, nil
+}
+
+func signed(ctx context.Context, method, bucket, key string, body []byte) (*http.Response, error) {
+	endpoint, access, secret := credentials()
+	if endpoint == "" || access == "" || secret == "" || bucket == "" || key == "" {
+		return nil, nil
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return nil, err
+	}
+	region := os.Getenv("GARAGE_REGION")
+	if region == "" {
+		region = "garage"
+	}
+	path := "/" + escape(bucket) + "/" + escapeKey(key)
+	now := time.Now().UTC()
+	amzDate := now.Format("20060102T150405Z")
+	day := now.Format("20060102")
+	sum := sha256.Sum256(body)
+	payload := hex.EncodeToString(sum[:])
+	canonHeaders := "host:" + u.Host + "\n" + "x-amz-content-sha256:" + payload + "\n" + "x-amz-date:" + amzDate + "\n"
+	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
+	canonical := method + "\n" + path + "\n\n" + canonHeaders + "\n" + signedHeaders + "\n" + payload
+	scope := day + "/" + region + "/s3/aws4_request"
+	canonSum := sha256.Sum256([]byte(canonical))
+	stringToSign := "AWS4-HMAC-SHA256\n" + amzDate + "\n" + scope + "\n" + hex.EncodeToString(canonSum[:])
+	sig := hex.EncodeToString(sign(secret, day, region, stringToSign))
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint+path, reader)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Host", u.Host)
+	req.Header.Set("x-amz-date", amzDate)
+	req.Header.Set("x-amz-content-sha256", payload)
+	req.Header.Set("Authorization", fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s", access, scope, signedHeaders, sig))
+	return s3HTTPClient.Do(req)
+}
+
+func sign(secret, day, region, stringToSign string) []byte {
+	kDate := hmacSum([]byte("AWS4"+secret), day)
+	kRegion := hmacSum(kDate, region)
+	kService := hmacSum(kRegion, "s3")
+	kSigning := hmacSum(kService, "aws4_request")
+	return hmacSum(kSigning, stringToSign)
+}
+
+func hmacSum(key []byte, data string) []byte {
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(data))
+	return mac.Sum(nil)
+}
+
+func escape(part string) string {
+	return strings.ReplaceAll(url.PathEscape(part), "+", "%20")
+}
+
+func escapeKey(key string) string {
+	parts := strings.Split(strings.TrimPrefix(key, "/"), "/")
+	for i, part := range parts {
+		parts[i] = escape(part)
+	}
+	return strings.Join(parts, "/")
+}

@@ -1,0 +1,375 @@
+syntax = "proto3";
+
+package secflow.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// ============================================================================
+// Core Domain Enums (aligned with Spec #1 / ADR-0001..0004 / submission-format.md)
+// File-level go_package / java_package / java_multiple_files are managed by
+// packages/proto/buf.gen.yaml (managed: enabled: true).
+// ============================================================================
+
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  SEVERITY_LOW = 1;
+  SEVERITY_MEDIUM = 2;
+  SEVERITY_HIGH = 3;
+  SEVERITY_CRITICAL = 4;
+}
+
+// Strict 3-category taxonomy from tests/data/repos/mentor-training/docs/submission-format.md.
+// SBOM is NEVER mixed into FindingCategory.
+enum FindingCategory {
+  FINDING_CATEGORY_UNSPECIFIED = 0;
+  FINDING_CATEGORY_SECRET = 1;
+  FINDING_CATEGORY_SAST = 2;
+  FINDING_CATEGORY_SCA = 3;
+}
+
+// Six orthogonal node families from Spec #1 (US #1 / ADR-0004):
+// 1. Triggers, 2. Sources, 3. Analyzers & SBOM, 4. Flow & Data Logic,
+// 5. AI & Reports, 6. Actions & MCP.
+// Specific capabilities (e.g. "analyzer" vs "sbom", "ai" vs "report",
+// "notify" vs "mcp") are carried in PluginManifest.capabilities.
+enum PluginCategory {
+  PLUGIN_CATEGORY_UNSPECIFIED = 0;
+  PLUGIN_CATEGORY_TRIGGER = 1;
+  PLUGIN_CATEGORY_SOURCE = 2;
+  PLUGIN_CATEGORY_ANALYZER = 3;
+  PLUGIN_CATEGORY_LOGIC = 4;
+  PLUGIN_CATEGORY_AI_REPORT = 5;
+  PLUGIN_CATEGORY_ACTION = 6;
+}
+
+enum PluginStatus {
+  PLUGIN_STATUS_UNSPECIFIED = 0;
+  PLUGIN_STATUS_ONLINE = 1;
+  PLUGIN_STATUS_DEGRADED = 2;
+  PLUGIN_STATUS_OFFLINE = 3;
+}
+
+enum RunStatus {
+  RUN_STATUS_UNSPECIFIED = 0;
+  RUN_STATUS_QUEUED = 1;
+  RUN_STATUS_RUNNING = 2;
+  RUN_STATUS_SUCCEEDED = 3;
+  RUN_STATUS_FAILED = 4;
+  RUN_STATUS_CANCELLED = 5;
+}
+
+enum NodeRunStatus {
+  NODE_RUN_STATUS_UNSPECIFIED = 0;
+  NODE_RUN_STATUS_PENDING = 1;
+  NODE_RUN_STATUS_RUNNING = 2;
+  NODE_RUN_STATUS_SUCCEEDED = 3;
+  NODE_RUN_STATUS_FAILED = 4;
+  NODE_RUN_STATUS_SKIPPED = 5;
+  NODE_RUN_STATUS_CANCELLED = 6;
+}
+
+enum GateStatus {
+  GATE_STATUS_UNSPECIFIED = 0;
+  GATE_STATUS_PASS = 1;
+  GATE_STATUS_WARN = 2;
+  GATE_STATUS_FAIL = 3;
+}
+
+enum AIQuality {
+  AI_QUALITY_UNSPECIFIED = 0;
+  AI_QUALITY_VERIFIED = 1;
+  AI_QUALITY_DEGRADED = 2; // Hallucinated CVE/GHSA detected & stripped
+  AI_QUALITY_FALLBACK = 3; // Deterministic template report after LLM failure/timeout
+}
+
+enum ReleaseDecision {
+  RELEASE_DECISION_UNSPECIFIED = 0;
+  RELEASE_DECISION_PASS = 1;
+  RELEASE_DECISION_WARN = 2;
+  RELEASE_DECISION_BLOCK = 3;
+}
+
+enum PrivacyMode {
+  PRIVACY_MODE_UNSPECIFIED = 0;
+  PRIVACY_MODE_REDACTED_SNIPPET = 1; // +/- 5 lines, secrets redacted, XML-isolated
+  PRIVACY_MODE_METADATA_ONLY = 2;    // No source code sent to LLM
+}
+
+enum AIProviderMode {
+  AI_PROVIDER_MODE_UNSPECIFIED = 0;
+  AI_PROVIDER_MODE_CLOUD = 1;
+  AI_PROVIDER_MODE_OLLAMA = 2;
+  AI_PROVIDER_MODE_TEMPLATE_FALLBACK = 3;
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0; // Used for scoped CI/MCP tokens (permissions come strictly from scopes)
+  ROLE_VIEWER = 1;
+  ROLE_EDITOR = 2;
+  ROLE_OWNER = 3;
+}
+
+enum AuthMode {
+  AUTH_MODE_UNSPECIFIED = 0;
+  AUTH_MODE_LOCAL = 1;
+  AUTH_MODE_OIDC = 2;
+  AUTH_MODE_SCOPED_TOKEN = 3;
+  AUTH_MODE_WEBHOOK = 4;
+}
+
+enum GitProvider {
+  GIT_PROVIDER_UNSPECIFIED = 0;
+  GIT_PROVIDER_GITHUB = 1;
+  GIT_PROVIDER_GITLAB = 2;
+}
+
+enum ValidationSeverity {
+  VALIDATION_SEVERITY_UNSPECIFIED = 0;
+  VALIDATION_SEVERITY_ERROR = 1;
+  VALIDATION_SEVERITY_WARNING = 2;
+}
+
+enum TriggerType {
+  TRIGGER_TYPE_UNSPECIFIED = 0;
+  TRIGGER_TYPE_MANUAL = 1;
+  TRIGGER_TYPE_SCHEDULE = 2;
+  TRIGGER_TYPE_WEBHOOK = 3;
+  TRIGGER_TYPE_CI_API = 4;
+  TRIGGER_TYPE_MCP = 5;
+  TRIGGER_TYPE_RERUN = 6;
+}
+
+// ============================================================================
+// Actor & Auth Context (explicitly propagated on user-initiated gRPC requests
+// for compile-time type safety across Go + Kotlin; traceparent travels in W3C
+// gRPC metadata).
+// ============================================================================
+
+message ActorContext {
+  string subject = 1;            // User ID or token ID
+  string email = 2;
+  Role role = 3;                 // ROLE_UNSPECIFIED for scoped CI/MCP tokens
+  repeated string scopes = 4;    // e.g. ci:startRun, ci:readRun, mcp:read, mcp:run, mcp:write
+  string scoped_workflow_id = 5; // Optional workflow restriction for CI tokens
+  AuthMode auth_mode = 6;
+}
+
+// ============================================================================
+// Pagination
+// ============================================================================
+
+message PageRequest {
+  int32 limit = 1;              // Default 25, max 100
+  string cursor = 2;            // Opaque cursor
+}
+
+message PageInfo {
+  string next_cursor = 1;
+  bool has_more = 2;
+  int64 total_count = 3;
+}
+
+// ============================================================================
+// Garage Object References (content-addressed S3 storage)
+// ============================================================================
+
+message SourceRef {
+  string source_id = 1;
+  string bucket = 2;            // "secflow-sources"
+  string key = 3;               // "{sha256}.tar.gz"
+  string sha256 = 4;
+  string repo_name = 5;
+  string repo_url = 6;          // Empty for ZIP uploads
+  string git_ref = 7;           // Branch, tag, or commit SHA
+  string commit_sha = 8;
+  int64 size_bytes = 9;
+  int32 file_count = 10;
+}
+
+message SbomRef {
+  string bucket = 1;            // "secflow-sbom"
+  string key = 2;               // "{run_id}.cdx.json"
+  string digest = 3;            // "sha256:..."
+  string spec_version = 4;      // "1.6"
+  int32 component_count = 5;
+  int32 vulnerability_count = 6;
+  google.protobuf.Timestamp generated_at = 7;
+}
+
+// ============================================================================
+// Findings (Authoritative Run Findings + Branch-local Envelope Findings)
+// Strictly aligned with tests/data/repos/mentor-training/docs/submission-format.md
+// ============================================================================
+
+message Finding {
+  // Stable deterministic ID assigned for grounding & deduplication (e.g. "F-001").
+  // Omitted when serializing GET /runs/{id}/submission.json.
+  string finding_id = 1;
+
+  // Deterministic fingerprint for deduplication & Baseline Diff (logic.compare).
+  string fingerprint = 2;
+
+  // Source node/plugin metadata (omitted from submission.json).
+  string source_node_id = 3;
+  string plugin_id = 4;
+
+  // --- Mandatory submission.json fields ---
+  FindingCategory category = 5; // SECRET | SAST | SCA
+  string path = 6;              // Relative forward-slash path, no ".." or drive letters
+
+  // --- SECRET & SAST fields (omitted for SCA in submission.json) ---
+  // Maps to JSON key "class" in submission.json (e.g. "password", "sql-injection").
+  string finding_class = 7;
+  optional int32 line = 8;      // 1-based inclusive
+  optional int32 end_line = 9;  // 1-based inclusive, line <= end_line <= line + 14
+
+  // --- SCA fields (omitted for SECRET/SAST in submission.json) ---
+  string group = 10;            // Maven groupId
+  string artifact = 11;         // Maven artifactId
+  string version = 12;          // Resolved exact version
+  string advisory_id = 13;      // Single CVE-... or GHSA-... from catalog
+
+  // --- Optional submission.json fields ---
+  Severity severity = 14;
+  string description = 15;      // Never contains raw secret values
+  string remediation = 16;
+
+  // --- Extended non-submission metadata ---
+  string masked_snippet = 17;   // Secret-masked code preview (never raw secret)
+  bool is_new_vs_baseline = 18; // Set by logic.compare Baseline Diff
+}
+
+// Authoritative finding coordinates deterministically re-attached by the
+// grounding validator in ai-service (never trusted from LLM output).
+message GroundedFindingSummary {
+  FindingCategory category = 1;
+  string path = 2;
+  optional int32 line = 3;
+  optional int32 end_line = 4;
+  string finding_class = 5;
+  string group = 6;
+  string artifact = 7;
+  string version = 8;
+  string advisory_id = 9;
+  Severity severity = 10;
+}
+
+// ============================================================================
+// Envelope & Workflow Execution State (ADR-0004)
+// ============================================================================
+
+message TriggerMetadata {
+  TriggerType type = 1;
+  string repo_url = 2;
+  string branch = 3;
+  string commit_sha = 4;
+  optional int32 pr_number = 5;
+  GitProvider git_provider = 6;
+  string delivery_id = 7;
+  string triggered_by = 8;
+  string commit_status_url = 9; // For GitHub/GitLab Commit Status API callback
+  google.protobuf.Timestamp triggered_at = 10;
+}
+
+message EnvelopeStats {
+  int32 total = 1;
+  int32 new_count = 2;
+  int32 critical = 3;
+  int32 high = 4;
+  int32 medium = 5;
+  int32 low = 6;
+  int32 secret_count = 7;
+  int32 sast_count = 8;
+  int32 sca_count = 9;
+  Severity max_severity = 10;
+}
+
+message GateResult {
+  GateStatus status = 1;
+  string reason = 2;
+  string node_id = 3;
+}
+
+message AIReportGroup {
+  string title = 1;
+  Severity max_severity = 2;
+  repeated string finding_ids = 3;
+  string summary = 4;
+}
+
+message AIReportItem {
+  string finding_id = 1;
+  int32 priority_rank = 2;
+  string plain_language_risk = 3;
+  string business_impact = 4;
+  repeated string remediation_steps = 5;
+  repeated string referenced_advisories = 6;
+  // Deterministically re-attached from authoritative Run Findings:
+  GroundedFindingSummary finding = 7;
+}
+
+message AIReport {
+  AIQuality quality = 1;
+  ReleaseDecision release_decision = 2;
+  string executive_summary = 3;
+  repeated AIReportGroup groups = 4;
+  repeated AIReportItem items = 5;
+  string model_id = 6;
+  AIProviderMode provider_mode = 7;
+  PrivacyMode privacy_mode = 8;
+  int32 stripped_hallucinated_advisories = 9;
+  bool cached = 10;
+  string prompt_hash = 11;
+  int32 tokens_in = 12;
+  int32 tokens_out = 13;
+  int64 latency_ms = 14;
+  google.protobuf.Timestamp created_at = 15;
+}
+
+// ============================================================================
+// Workflow Graph Definition (React Flow <-> Edge Gateway <-> Orchestrator)
+// ============================================================================
+
+message Position {
+  double x = 1;
+  double y = 2;
+}
+
+// Canonical per-node secret binding shape (identical across protojson,
+// workflow-graph.schema.json, and GraphQL).
+message SecretBinding {
+  string param_key = 1;
+  string secret_ref = 2;
+}
+
+message WorkflowNode {
+  string id = 1;                            // Unique node ID within workflow
+  string plugin_id = 2;                     // e.g. "trigger.manual", "source.git", "scan.secrets"
+  string label = 3;                         // User-visible node title
+  Position position = 4;                    // Canvas coordinates
+  bytes params_json = 5;                    // JSON object matching PluginManifest.params_json_schema (NO raw secrets)
+  repeated SecretBinding secret_bindings = 6; // Explicit paramKey -> secretRef list for least-privilege ResolveScopedSecret
+}
+
+message WorkflowEdge {
+  string id = 1;
+  string source_node_id = 2;
+  string source_handle = 3;              // "default" | "true" | "false" | "CRITICAL" | "HIGH" | "MEDIUM_LOW" | "SECRET" | "SAST" | "SCA" | "CLEAN" | "PASS" | "WARN" | "FAIL" | "match" | "nomatch"
+  string target_node_id = 4;
+  string target_handle = 5;              // "default"
+}
+
+message WorkflowGraph {
+  int32 schema_version = 1;              // Currently 1
+  repeated WorkflowNode nodes = 2;
+  repeated WorkflowEdge edges = 3;
+}
+
+message ValidationIssue {
+  string code = 1;                       // e.g. "DAG_CYCLE", "MISSING_SOURCE_NODE", "UNKNOWN_PLUGIN", "MISSING_REQUIRED_PARAM", "URL_NOT_ALLOWLISTED"
+  ValidationSeverity severity = 2;
+  string message = 3;
+  string node_id = 4;                    // Optional
+  string edge_id = 5;                    // Optional
+  string field_path = 6;                 // JSON pointer / param key
+}

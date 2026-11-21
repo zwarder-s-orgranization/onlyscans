@@ -1,0 +1,17 @@
+server:
+  address: 127.0.0.1
+
+spring:
+  datasource:
+    url: jdbc:h2:mem:repairdesk;DB_CLOSE_DELAY=-1
+  sql:
+    init:
+      mode: always
+
+pickup:
+  callback:
+    authorization: "Bearer cg26_pickup_Gq7mP8vJdW3sY6zN"
+
+inventory:
+  integration:
+    token: ${INVENTORY_TOKEN}

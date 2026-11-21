@@ -1,0 +1,189 @@
+syntax = "proto3";
+
+package secflow.v1;
+
+import "google/protobuf/timestamp.proto";
+import "secflow/v1/common.proto";
+
+// WorkflowService manages Workflow DAG definitions, pre-run validation,
+// ★1 Template Library (with automatic secret/URL stripping), and ★2 CI YAML generation.
+service WorkflowService {
+  rpc CreateWorkflow(CreateWorkflowRequest) returns (CreateWorkflowResponse);
+  rpc UpdateWorkflow(UpdateWorkflowRequest) returns (UpdateWorkflowResponse);
+  rpc GetWorkflow(GetWorkflowRequest) returns (GetWorkflowResponse);
+  rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
+  rpc DeleteWorkflow(DeleteWorkflowRequest) returns (DeleteWorkflowResponse);
+
+  // Pre-run structural & parameter validation against active PluginRegistry + allowlist.
+  rpc ValidateWorkflow(ValidateWorkflowRequest) returns (ValidateWorkflowResponse);
+
+  // ★1 Template Library
+  rpc PublishTemplate(PublishTemplateRequest) returns (PublishTemplateResponse);
+  rpc ListTemplates(ListTemplatesRequest) returns (ListTemplatesResponse);
+  rpc GetTemplate(GetTemplateRequest) returns (GetTemplateResponse);
+  rpc CloneTemplate(CloneTemplateRequest) returns (CloneTemplateResponse);
+
+  // ★2 CI/CD YAML generator (GitHub Actions / GitLab CI)
+  rpc GenerateCiConfig(GenerateCiConfigRequest) returns (GenerateCiConfigResponse);
+}
+
+message Workflow {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  int32 version = 4;
+  WorkflowGraph graph = 5;
+  string owner_subject = 6;
+  bool schedule_enabled = 7;
+  string cron_expression = 8;            // Extracted from trigger.schedule node if present
+  bool webhook_enabled = 9;              // True if trigger.webhook node is present
+  string webhook_path = 10;              // "/webhooks/git/{id}"
+  string source_template_id = 11;        // Set when cloned from a template
+  repeated ValidationIssue validation_issues = 12;
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp updated_at = 14;
+}
+
+message WorkflowTemplate {
+  string id = 1;
+  string slug = 2;                       // e.g. "full-pre-release-appsec-gate"
+  string name = 3;
+  string description = 4;
+  string problem_solved = 5;
+  repeated string tags = 6;
+  bool is_builtin = 7;                   // True for the 7 pre-seeded canonical templates
+  WorkflowGraph sanitized_graph = 8;     // Guaranteed zero secret_bindings & zero local URLs
+  string author_subject = 9;
+  int32 clone_count = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+}
+
+message CreateWorkflowRequest {
+  ActorContext actor = 1;
+  string name = 2;
+  string description = 3;
+  WorkflowGraph graph = 4;
+}
+
+message CreateWorkflowResponse {
+  Workflow workflow = 1;
+}
+
+message UpdateWorkflowRequest {
+  ActorContext actor = 1;
+  string workflow_id = 2;
+  optional int32 expected_version = 3;   // Optimistic concurrency check (omit to skip)
+  string name = 4;
+  string description = 5;
+  WorkflowGraph graph = 6;
+}
+
+message UpdateWorkflowResponse {
+  Workflow workflow = 1;
+}
+
+message GetWorkflowRequest {
+  ActorContext actor = 1;
+  string workflow_id = 2;
+}
+
+message GetWorkflowResponse {
+  Workflow workflow = 1;
+}
+
+message ListWorkflowsRequest {
+  ActorContext actor = 1;
+  PageRequest page = 2;
+  string search = 3;
+}
+
+message ListWorkflowsResponse {
+  repeated Workflow workflows = 1;
+  PageInfo page_info = 2;
+}
+
+message DeleteWorkflowRequest {
+  ActorContext actor = 1;
+  string workflow_id = 2;
+}
+
+message DeleteWorkflowResponse {
+  bool deleted = 1;
+}
+
+message ValidateWorkflowRequest {
+  ActorContext actor = 1;
+  WorkflowGraph graph = 2;
+}
+
+message ValidateWorkflowResponse {
+  bool valid = 1;                        // True iff zero ERROR-level issues
+  repeated ValidationIssue issues = 2;
+}
+
+message PublishTemplateRequest {
+  ActorContext actor = 1;
+  string workflow_id = 2;
+  string name = 3;
+  string description = 4;
+  string problem_solved = 5;
+  repeated string tags = 6;
+}
+
+message PublishTemplateResponse {
+  WorkflowTemplate template = 1;
+}
+
+message ListTemplatesRequest {
+  ActorContext actor = 1;
+  PageRequest page = 2;
+  string search = 3;
+  repeated string tags = 4;
+}
+
+message ListTemplatesResponse {
+  repeated WorkflowTemplate templates = 1;
+  PageInfo page_info = 2;
+}
+
+message GetTemplateRequest {
+  ActorContext actor = 1;
+  string template_id = 2;
+}
+
+message GetTemplateResponse {
+  WorkflowTemplate template = 1;
+}
+
+message CloneTemplateRequest {
+  ActorContext actor = 1;
+  string template_id = 2;
+  string new_workflow_name = 3;
+}
+
+message CloneTemplateResponse {
+  Workflow workflow = 1;
+}
+
+enum CiProvider {
+  CI_PROVIDER_UNSPECIFIED = 0;
+  CI_PROVIDER_GITHUB_ACTIONS = 1;
+  CI_PROVIDER_GITLAB_CI = 2;
+}
+
+message GenerateCiConfigRequest {
+  ActorContext actor = 1;
+  string workflow_id = 2;
+  CiProvider provider = 3;
+  string secflow_base_url = 4;           // Public URL of edge-gateway
+  Severity fail_on_severity = 5;         // Default HIGH
+  bool fail_on_policy_gate = 6;          // Default true
+}
+
+message GenerateCiConfigResponse {
+  CiProvider provider = 1;
+  string filename = 2;                   // ".github/workflows/secflow-security.yml" | ".gitlab-ci.yml"
+  string yaml_content = 3;
+  repeated string required_ci_secrets = 4; // e.g. ["SECFLOW_CI_TOKEN"]
+}

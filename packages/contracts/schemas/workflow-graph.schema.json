@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://secflow.local/schemas/workflow-graph.schema.json",
+  "title": "SecFlow Workflow Graph Contract (React Flow <-> GraphQL <-> Orchestrator)",
+  "description": "Canonical DAG representation shared by Next.js @xyflow/react, edge-gateway, orchestrator, ★1 Template Library, and ★3 AIService.GenerateWorkflow. Enforces ADR-0004 (strict Trigger -> Source -> ... separation, explicit output port handles, and zero raw secrets in params).",
+  "type": "object",
+  "required": ["schemaVersion", "nodes", "edges"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "pluginId", "label", "position", "params"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-zA-Z0-9_-]+$"
+          },
+          "pluginId": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9._-]{1,63}$",
+            "description": "Must match an active built-in or registered external PluginManifest.plugin_id."
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "position": {
+            "type": "object",
+            "required": ["x", "y"],
+            "additionalProperties": false,
+            "properties": {
+              "x": { "type": "number" },
+              "y": { "type": "number" }
+            }
+          },
+          "params": {
+            "type": "object",
+            "description": "Validated against PluginManifest.params_json_schema (canonical built-in schemas in node-params.schema.json). String fields in source.git, notify.*, mcp.tool, report.export may use safe {{ $trigger.* | $envelope.* | $ai.* | $run.* }} expressions. Raw secrets are FORBIDDEN here."
+          },
+          "secretBindings": {
+            "type": "array",
+            "default": [],
+            "description": "Explicit mapping of logical secret param keys to SecretStore secret_ref IDs. Identical wire shape across protojson (repeated SecretBinding), JSON Schema, and GraphQL. Stripped automatically on Template publish/clone and always empty in ★3 GenerateWorkflow output.",
+            "items": {
+              "type": "object",
+              "required": ["paramKey", "secretRef"],
+              "additionalProperties": false,
+              "properties": {
+                "paramKey": { "type": "string", "minLength": 1 },
+                "secretRef": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "sourceNodeId", "sourceHandle", "targetNodeId", "targetHandle"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "sourceNodeId": { "type": "string", "minLength": 1 },
+          "sourceHandle": {
+            "type": "string",
+            "minLength": 1,
+            "default": "default",
+            "description": "Must match a PortDefinition.id declared in the source plugin's output_ports (e.g. default, true, false, match, nomatch, CRITICAL, HIGH, MEDIUM_LOW, SECRET, SAST, SCA, CLEAN, PASS, WARN, FAIL)."
+          },
+          "targetNodeId": { "type": "string", "minLength": 1 },
+          "targetHandle": {
+            "type": "string",
+            "minLength": 1,
+            "default": "default"
+          }
+        }
+      }
+    }
+  }
+}
