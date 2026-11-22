@@ -50,12 +50,15 @@ metadata:
   labels:
     app: garage-init
     {{- include "secflow.commonLabels" . | nindent 4 }}
-  {{- if .Values.garage.initJob.asHelmHook }}
   annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "1"
+    {{- if .Values.garage.initJob.asHelmHook }}
     "helm.sh/hook": post-install,post-upgrade
     "helm.sh/hook-weight": "0"
     "helm.sh/hook-delete-policy": before-hook-creation
-  {{- end }}
+    {{- end }}
 spec:
   backoffLimit: {{ .Values.garage.initJob.backoffLimit }}
   template:
@@ -92,8 +95,8 @@ spec:
               value: {{ printf "%s,%s,%s" .Values.namespaces.app .Values.namespaces.workers .Values.namespaces.sandbox | quote }}
             - name: GARAGE_CRED_FILE
               value: /tmp/garage.json
-            - name: DEFAULT_CATALOG_PATH
-              value: /mentor-training/vulnerability-database/vulnerabilities.json
+            - name: OSV_MAVEN_ZIP_URL
+              value: https://osv-vulnerabilities.storage.googleapis.com/Maven/all.zip
           securityContext:
             {{- include "secflow.containerSecurityContext" . | nindent 12 }}
           volumeMounts:

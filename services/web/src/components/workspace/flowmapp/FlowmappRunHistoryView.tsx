@@ -59,6 +59,7 @@ import {
   FlowmappPolicyPill,
   FlowmappRunStatusText,
 } from "./FlowmappChrome";
+import { MarkdownReportView } from "./MarkdownReportView";
 
 export interface PreviewNodeData extends CanvasBoardNodeData {
   stepSummary?: string;
@@ -567,6 +568,8 @@ function RunCanvasPreviewInner({
   const [reportText, setReportText] = useState<string | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
+  const [reportViewMode, setReportViewMode] = useState<"formatted" | "raw">("formatted");
+  const [copiedReport, setCopiedReport] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [copiedJson, setCopiedJson] = useState(false);
 
@@ -621,6 +624,8 @@ function RunCanvasPreviewInner({
     setDetailTab(preferredDetailTab(run));
     setReportText(null);
     setReportError(null);
+    setReportViewMode("formatted");
+    setCopiedReport(false);
   }, [run.id]);
 
   useEffect(() => {
@@ -768,6 +773,16 @@ function RunCanvasPreviewInner({
     setCopiedJson(true);
     onNotice?.("JSON вывода скопирован");
     window.setTimeout(() => setCopiedJson(false), 1500);
+  };
+
+  const handleCopyReport = () => {
+    if (!reportText) return;
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      void navigator.clipboard.writeText(reportText);
+    }
+    setCopiedReport(true);
+    onNotice?.("Markdown отчёт скопирован");
+    window.setTimeout(() => setCopiedReport(false), 1500);
   };
 
   const handleDownload = async (key: string, url: string | undefined, fallbackName: string) => {
@@ -1308,13 +1323,75 @@ function RunCanvasPreviewInner({
               {reportError}
             </div>
           ) : (
-            <article className="rounded-[20px] border border-[#8c9baa]/70 bg-[#ffffff] p-4 sm:p-5">
-              <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-[#000000]">
-                Читаемый отчёт
-              </h2>
-              <pre className="fm-scroll mt-3 whitespace-pre-wrap [overflow-wrap:anywhere] text-[13px] leading-[1.5] text-[#000000]">
-                {reportText || "Отчёт пуст."}
-              </pre>
+            <article className="min-w-0 rounded-[20px] border border-[#8c9baa]/70 bg-[#ffffff] p-4 sm:p-6">
+              <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-[#8c9baa]/30 pb-3">
+                <h2 className="text-[15px] font-semibold tracking-[-0.02em] text-[#000000]">
+                  Читаемый отчёт
+                </h2>
+                {Boolean(reportText?.trim()) && (
+                  <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                    <div
+                      role="group"
+                      aria-label="Режим отображения отчёта"
+                      className="inline-flex rounded-full border border-[#8c9baa]/55 p-0.5 text-[11px]"
+                    >
+                      <button
+                        type="button"
+                        aria-pressed={reportViewMode === "formatted"}
+                        onClick={() => setReportViewMode("formatted")}
+                        className={`fm-focus min-h-[26px] cursor-pointer rounded-full px-2.5 font-semibold transition-colors active:scale-[0.98] ${
+                          reportViewMode === "formatted"
+                            ? "bg-[#000000] text-[#ffffff]"
+                            : "text-[#636f7b] hover:text-[#000000]"
+                        }`}
+                      >
+                        Оформленный
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={reportViewMode === "raw"}
+                        onClick={() => setReportViewMode("raw")}
+                        className={`fm-focus fm-mono min-h-[26px] cursor-pointer rounded-full px-2.5 font-semibold transition-colors active:scale-[0.98] ${
+                          reportViewMode === "raw"
+                            ? "bg-[#000000] text-[#ffffff]"
+                            : "text-[#636f7b] hover:text-[#000000]"
+                        }`}
+                      >
+                        .md
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleCopyReport}
+                      className="fm-focus inline-flex min-h-[30px] cursor-pointer items-center gap-1 rounded-full border border-[#8c9baa]/65 bg-[#ffffff] px-2.5 text-[11px] font-medium text-[#222222] transition-colors hover:border-[#0080ff] hover:text-[#0050ff] active:scale-[0.98]"
+                    >
+                      {copiedReport ? (
+                        <>
+                          <Check className="h-3 w-3 stroke-[2]" aria-hidden="true" />
+                          <span>Скопировано</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-3 w-3 stroke-[1.7]" aria-hidden="true" />
+                          <span>Копировать</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {!reportText?.trim() ? (
+                <p className="py-10 text-center text-[13px] text-[#636f7b]">Отчёт пуст.</p>
+              ) : reportViewMode === "formatted" ? (
+                <div className="mt-4">
+                  <MarkdownReportView content={reportText} />
+                </div>
+              ) : (
+                <pre className="fm-code-block fm-scroll fm-mono mt-4 overflow-x-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[14px] p-4 text-[12.5px] leading-[1.55]">
+                  {reportText}
+                </pre>
+              )}
             </article>
           )}
         </div>

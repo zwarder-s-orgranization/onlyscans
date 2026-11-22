@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	secflowv1 "github.com/secflow/secflow/packages/proto/gen/go/secflow/v1"
 	"github.com/secflow/secflow/services/internal/blobstore"
@@ -80,6 +81,10 @@ func main() {
 		slog.Warn("telemetry init", "err", err)
 	} else {
 		defer obs.Shutdown(shutdownObs)
+	}
+
+	if err := blobstore.WaitReachable(ctx, 15*time.Second); err != nil && ctx.Err() == nil {
+		slog.Warn("garage reachability wait timed out", "err", err)
 	}
 
 	m := manifest.One("sbom.generate", "SBOM", secflowv1.PluginCategory_PLUGIN_CATEGORY_ANALYZER, []string{"sbom"}, false)

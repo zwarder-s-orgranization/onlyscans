@@ -24,9 +24,12 @@ import {
   type RunEventMessage,
 } from "@/lib/api";
 import {
+  applyNodeStatusToRun,
   boardFromGraph,
   canvasStatus,
   graphFromBoard,
+  mergePolledRun,
+  optimisticRerunRecord,
   runRecord,
   statusesFromRun,
   templateRecord,
@@ -133,6 +136,25 @@ function progressFromPaintMap(
   const running = entries.some((item) => item.status === "running") ? 0.35 : 0;
   const pct = Math.round(((done + running) / total) * 100);
   return Math.max(8, Math.min(95, pct));
+}
+
+function reachableNodeIds(edges: Array<{ source: string; target: string }>, start: string): Set<string> {
+  const next = new Map<string, string[]>();
+  for (const edge of edges) {
+    const list = next.get(edge.source) ?? [];
+    list.push(edge.target);
+    next.set(edge.source, list);
+  }
+  const seen = new Set<string>();
+  const queue = [start];
+  while (queue.length > 0) {
+    const id = queue.shift();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    for (const target of next.get(id) ?? []) queue.push(target);
+  }
+  seen.add(start);
+  return seen;
 }
 
 export function useWorkflowsWorkspace() {
@@ -609,8 +631,9 @@ export function useWorkflowsWorkspace() {
               const paintMap = statusesFromRun(current);
               setNodeRunStatusesByWorkflow((prev) => ({ ...prev, [workflowId]: paintMap }));
               setRunHistory((prev) => {
-                const mapped = runRecord(current);
-                const exists = prev.some((item) => item.id === mapped.id);
+                const existing = prev.find((item) => item.id === current.id);
+                const mapped = mergePolledRun(existing, runRecord(current));
+                const exists = Boolean(existing);
                 return exists
                   ? prev.map((item) => (item.id === mapped.id ? mapped : item))
                   : [mapped, ...prev];
@@ -643,6 +666,13 @@ export function useWorkflowsWorkspace() {
         }
         if (ev.nodeId && ev.nodeStatus) {
           const mappedStatus = canvasStatus(ev.nodeStatus);
+          const eventNodeId = ev.nodeId;
+          const eventStatus = ev.nodeStatus;
+          setRunHistory((prev) =>
+            prev.map((item) =>
+              item.id === runId ? applyNodeStatusToRun(item, eventNodeId, eventStatus) : item,
+            ),
+          );
           setNodeRunStatusesByWorkflow((prev) => {
             const wfMap = { ...(prev[workflowId] ?? {}) };
             const existing = wfMap[ev.nodeId!];
@@ -807,8 +837,27 @@ export function useWorkflowsWorkspace() {
         const newRunId = res.rerunFromNode.id;
         const sourceRun = runHistory.find((r) => r.id === runId);
         const wfId = sourceRun?.workflowId ?? activeBoardIdRef.current ?? "";
-        if (wfId) {
-          const totalNodes = boardsRef.current[wfId]?.nodes.length ?? sourceRun?.nodesCount ?? 1;
+        if (wfId && sourceRun) {
+          const board = boardsRef.current[wfId];
+          const affected = reachableNodeIds(board?.edges ?? [], nodeId);
+          const optimistic = optimisticRerunRecord(sourceRun, newRunId, nodeId, affected);
+          setRunHistory((prev) => [optimistic, ...prev.filter((item) => item.id !== newRunId)]);
+          setHistoryFocus({ runId: newRunId, at: Date.now() });
+          setNodeRunStatusesByWorkflow((prev) => {
+            const next = { ...(prev[wfId] ?? {}) };
+            for (const id of affected) {
+              next[id] = { status: id === nodeId ? "running" : "idle" };
+            }
+            return { ...prev, [wfId]: next };
+          });
+          const totalNodes = board?.nodes.length ?? sourceRun.nodesCount ?? 1;
+          setRunningMap((prev) => ({
+            ...prev,
+            [wfId]: { runId: newRunId, progress: 15, stage: `Повтор с узла ${nodeId}` },
+          }));
+          watchRunLifecycle(wfId, newRunId, totalNodes);
+        } else if (wfId) {
+          const totalNodes = boardsRef.current[wfId]?.nodes.length ?? 1;
           setRunningMap((prev) => ({
             ...prev,
             [wfId]: { runId: newRunId, progress: 15, stage: `Повтор с узла ${nodeId}` },

@@ -1,15 +1,22 @@
 package blobstore
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestPutWithoutConfigDoesNothing(t *testing.T) {
@@ -150,6 +157,72 @@ func TestEnsureCreatesFourBucketsAndSeedsCatalog(t *testing.T) {
 	}
 }
 
+func TestEnsureSeedsDefaultCatalogFromLiveOSVFeed(t *testing.T) {
+	var zipBuf bytes.Buffer
+	zw := zip.NewWriter(&zipBuf)
+	w, err := zw.Create("GHSA-599f-7c49-w659.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = w.Write([]byte(`{
+		"id": "GHSA-599f-7c49-w659",
+		"aliases": ["CVE-2022-42889"],
+		"database_specific": {"severity": "CRITICAL"},
+		"affected": [{
+			"package": {"ecosystem": "Maven", "name": "org.apache.commons:commons-text"},
+			"ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "1.5"}, {"fixed": "1.10.0"}]}]
+		}]
+	}`))
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	osvSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(zipBuf.Bytes())
+	}))
+	defer osvSrv.Close()
+
+	var mu sync.Mutex
+	storedObjects := map[string][]byte{}
+	s3Srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method {
+		case http.MethodGet:
+			data, ok := storedObjects[r.URL.Path]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = w.Write(data)
+		case http.MethodPut:
+			body, _ := io.ReadAll(r.Body)
+			storedObjects[r.URL.Path] = body
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+	defer s3Srv.Close()
+
+	t.Setenv("GARAGE_ENDPOINT", s3Srv.URL)
+	t.Setenv("GARAGE_ACCESS_KEY", "GK-test")
+	t.Setenv("GARAGE_SECRET_KEY", "GS-test")
+	t.Setenv("DEFAULT_CATALOG_PATH", "")
+	t.Setenv("CATALOG_PATH", "")
+	t.Setenv("CATALOG_FEED_URL", "")
+	t.Setenv("OSV_MAVEN_ZIP_URL", osvSrv.URL+"/Maven/all.zip")
+	remember("", "")
+
+	if err := Ensure(t.Context()); err != nil {
+		t.Fatalf("Ensure(live OSV feed): %v", err)
+	}
+	seeded := string(storedObjects["/secflow-catalogs/default.json"])
+	if !strings.Contains(seeded, "CVE-2022-42889") || !strings.Contains(seeded, "commons-text") {
+		t.Fatalf("expected OSV catalog seeded into Garage, got %q", seeded)
+	}
+}
+
 func TestHTTPClientsHaveExplicitTimeouts(t *testing.T) {
 	if s3HTTPClient == nil || s3HTTPClient.Timeout <= 0 {
 		t.Fatalf("s3HTTPClient must have an explicit positive timeout, got %+v", s3HTTPClient)
@@ -157,4 +230,76 @@ func TestHTTPClientsHaveExplicitTimeouts(t *testing.T) {
 	if garageHTTPClient == nil || garageHTTPClient.Timeout <= 0 {
 		t.Fatalf("garageHTTPClient must have an explicit positive timeout, got %+v", garageHTTPClient)
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestGetRetriesTransientTransportError(t *testing.T) {
+	t.Setenv("GARAGE_ENDPOINT", "http://garage.local:3900")
+	t.Setenv("GARAGE_ACCESS_KEY", "GK-test")
+	t.Setenv("GARAGE_SECRET_KEY", "GS-test")
+	remember("", "")
+
+	origClient := s3HTTPClient
+	origBackoffs := s3RetryBackoffs
+	t.Cleanup(func() {
+		s3HTTPClient = origClient
+		s3RetryBackoffs = origBackoffs
+	})
+
+	var attempts atomic.Int32
+	s3RetryBackoffs = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	s3HTTPClient = &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+			if attempts.Add(1) < 3 {
+				return nil, errors.New("dial tcp 10.43.0.10:3900: connect: connection refused")
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("archive-bytes")),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	got, err := Get(t.Context(), "secflow-sources", "sample.tar.gz")
+	if err != nil {
+		t.Fatalf("Get() after transient errors returned err = %v", err)
+	}
+	if string(got) != "archive-bytes" {
+		t.Fatalf("Get() = %q, want %q", string(got), "archive-bytes")
+	}
+	if attempts.Load() != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts.Load())
+	}
+}
+
+func TestWaitReachable(t *testing.T) {
+	t.Run("unset endpoint returns immediately", func(t *testing.T) {
+		t.Setenv("GARAGE_ENDPOINT", "")
+		if err := WaitReachable(t.Context(), 100*time.Millisecond); err != nil {
+			t.Fatalf("WaitReachable with empty endpoint: %v", err)
+		}
+	})
+
+	t.Run("reachable TCP listener succeeds", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		defer ln.Close()
+		go func() {
+			if c, aErr := ln.Accept(); aErr == nil {
+				_ = c.Close()
+			}
+		}()
+
+		t.Setenv("GARAGE_ENDPOINT", "http://"+ln.Addr().String())
+		if err := WaitReachable(t.Context(), 2*time.Second); err != nil {
+			t.Fatalf("WaitReachable against live listener: %v", err)
+		}
+	})
 }

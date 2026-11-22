@@ -141,6 +141,19 @@ func TestLoadCatalogBytes(t *testing.T) {
 	if _, err := LoadCatalogBytes(nil); err == nil {
 		t.Fatal("expected error for empty bytes")
 	}
+
+	advisoriesFormat := []byte(`{"schemaVersion":"1.0","snapshotDate":"2026-06-01","advisories":[{"id":"CVE-2022-42889","group":"org.apache.commons","artifact":"commons-text","severity":"CRITICAL","affectedRanges":[{"lower":"1.5","upper":"1.10.0"}]}]}`)
+	advs2, err := LoadCatalogBytes(advisoriesFormat)
+	if err != nil {
+		t.Fatalf("LoadCatalogBytes(advisoriesFormat) error = %v", err)
+	}
+	if len(advs2) != 1 || len(advs2[0].Ranges) != 1 || !advs2[0].Ranges[0].LowerInclusive || advs2[0].Ranges[0].UpperInclusive {
+		t.Fatalf("unexpected parsed advisories format: %+v", advs2)
+	}
+	matched := Match([]Dependency{{Group: "org.apache.commons", Artifact: "commons-text", Version: "1.5", Path: "build.gradle.kts"}}, advs2)
+	if len(matched) != 1 || matched[0].AdvisoryID != "CVE-2022-42889" {
+		t.Fatalf("expected inclusive lower bound match on 1.5, got %+v", matched)
+	}
 }
 
 func TestParseProject_NestedGradleProject(t *testing.T) {
@@ -374,8 +387,191 @@ func repoRoot(t *testing.T) string {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatal("tests/data/repos/mentor-training not found")
+			t.Skip("optional mentor-training fixture directory is not present")
 		}
 		dir = parent
+	}
+}
+
+func TestParseProject_AdvancedGradleSyntaxesBundlesAndBuildscriptSkip(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "gradle"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	toml := `[versions]
+jackson = "2.15.2"
+guava = "32.1.3-jre"
+
+[libraries]
+jackson-core = { module = "com.fasterxml.jackson.core:jackson-core", version.ref = "jackson" }
+jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+
+[bundles]
+jackson = ["jackson-core", "jackson-databind"]
+`
+	if err := os.WriteFile(filepath.Join(root, "gradle", "libs.versions.toml"), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "gradle.lockfile"), []byte("org.jsoup:jsoup:1.15.3=compileClasspath\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	build := `
+buildscript {
+    dependencies {
+        classpath("org.ignored:build-plugin:0.1.0")
+    }
+}
+
+ext {
+    codecVer = "1.16.0"
+}
+
+dependencies {
+    /* implementation("org.commented:block-ignored:1.0.0") */
+    implementation(libs.bundles.jackson)
+    implementation("com.google.guava:guava:${libs.versions.guava.get()}")
+    implementation("commons-codec", "commons-codec", "$codecVer")
+    implementation(group = "org.apache.commons", name = "commons-text", version = "1.9")
+    implementation("org.jsoup:jsoup")
+    implementation(platform("org.springframework.boot:spring-boot-dependencies:3.2.5"))
+}
+`
+	if err := os.WriteFile(filepath.Join(root, "build.gradle.kts"), []byte(build), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	deps, err := ParseProject(root)
+	if err != nil {
+		t.Fatalf("ParseProject() error = %v", err)
+	}
+	byKey := map[string]string{}
+	for _, d := range deps {
+		byKey[d.Group+":"+d.Artifact] = d.Version
+	}
+
+	want := map[string]string{
+		"com.fasterxml.jackson.core:jackson-core":           "2.15.2",
+		"com.fasterxml.jackson.core:jackson-databind":       "2.15.2",
+		"com.google.guava:guava":                            "32.1.3-jre",
+		"commons-codec:commons-codec":                       "1.16.0",
+		"org.apache.commons:commons-text":                   "1.9",
+		"org.jsoup:jsoup":                                   "1.15.3",
+		"org.springframework.boot:spring-boot-dependencies": "3.2.5",
+	}
+	for k, wv := range want {
+		if got := byKey[k]; got != wv {
+			t.Errorf("%s version = %q, want %q (all: %+v)", k, got, wv, byKey)
+		}
+	}
+	if _, bad := byKey["org.commented:block-ignored"]; bad {
+		t.Errorf("block-commented dependency should be ignored: %+v", byKey)
+	}
+	if _, bad := byKey["org.ignored:build-plugin"]; bad {
+		t.Errorf("buildscript dependency should be ignored: %+v", byKey)
+	}
+}
+
+func TestParseProject_MavenPomXML(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	pom := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.acme</groupId>
+  <artifactId>payments</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <commons.text.version>1.9</commons.text.version>
+    <junit.version>5.10.2</junit.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.jsoup</groupId>
+        <artifactId>jsoup</artifactId>
+        <version>1.14.1</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-text</artifactId>
+      <version>${commons.text.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.jsoup</groupId>
+      <artifactId>jsoup</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>
+`
+	if err := os.WriteFile(filepath.Join(root, "pom.xml"), []byte(pom), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	deps, err := ParseProject(root)
+	if err != nil {
+		t.Fatalf("ParseProject(pom) error = %v", err)
+	}
+	byKey := map[string]Dependency{}
+	for _, d := range deps {
+		byKey[d.Group+":"+d.Artifact] = d
+	}
+	if d := byKey["org.apache.commons:commons-text"]; d.Version != "1.9" || d.IsDev || d.Path != "pom.xml" {
+		t.Errorf("commons-text = %+v", d)
+	}
+	if d := byKey["org.jsoup:jsoup"]; d.Version != "1.14.1" || d.IsDev {
+		t.Errorf("jsoup (from dependencyManagement) = %+v", d)
+	}
+	if d := byKey["org.junit.jupiter:junit-jupiter"]; d.Version != "5.10.2" || !d.IsDev {
+		t.Errorf("junit-jupiter = %+v", d)
+	}
+}
+
+func TestVersionCompareAndRanges_QualifiersAndUnbounded(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		a, b string
+		want int
+	}{
+		{"jre qualifier equals numeric release", "32.1.3-jre", "32.1.3", 0},
+		{"jre higher patch is greater than lower patch", "32.1.3-jre", "32.1.2", 1},
+		{"rc prerelease is less than final release", "1.10.0-RC1", "1.10.0", -1},
+		{"snapshot is less than release", "2.0.0-SNAPSHOT", "2.0.0", -1},
+		{"alpha less than beta", "1.0.0-alpha.1", "1.0.0-beta.1", -1},
+		{"beta less than rc", "1.0.0-beta.2", "1.0.0-rc.1", -1},
+		{"Final qualifier equals release", "5.6.15.Final", "5.6.15", 0},
+		{"calendar versions", "20230227", "20231013", -1},
+		{"trailing zero normalization", "1.10", "1.10.0", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := Compare(tt.a, tt.b); got != tt.want {
+				t.Errorf("Compare(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+
+	low := "1.5"
+	if !InRange("1.10.0-RC1", &low, true, "1.10.0", false) {
+		t.Error("expected 1.10.0-RC1 to be inside [1.5, 1.10.0)")
+	}
+	if InRange("32.1.3-jre", &low, true, "32.1.2", false) {
+		t.Error("expected 32.1.3-jre NOT to be inside [1.5, 32.1.2)")
+	}
+	if !InRange("9.9.9", &low, true, "", false) {
+		t.Error("expected empty upper bound to act as +infinity")
 	}
 }

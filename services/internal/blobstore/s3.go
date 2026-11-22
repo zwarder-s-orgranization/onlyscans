@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,10 +22,19 @@ import (
 )
 
 var (
-	credMu        sync.Mutex
-	runtimeAccess string
-	runtimeSecret string
-	s3HTTPClient  = &http.Client{Timeout: 30 * time.Second}
+	credMu          sync.Mutex
+	runtimeAccess   string
+	runtimeSecret   string
+	s3HTTPClient    = &http.Client{Timeout: 30 * time.Second}
+	s3RetryBackoffs = []time.Duration{
+		250 * time.Millisecond,
+		500 * time.Millisecond,
+		1 * time.Second,
+		1500 * time.Millisecond,
+		2 * time.Second,
+		2 * time.Second,
+		3 * time.Second,
+	}
 )
 
 func remember(access, secret string) {
@@ -113,6 +123,59 @@ func Configured() bool {
 	return endpoint != "" && access != "" && secret != ""
 }
 
+// WaitReachable waits until the configured GARAGE_ENDPOINT accepts TCP connections
+// (or until timeout / ctx cancellation). This avoids cold-start races on k3s/kube-router
+// where a freshly spawned worker pod connects to orchestrator milliseconds before the
+// NetworkPolicy ipset allows egress/ingress to Garage.
+// When GARAGE_ENDPOINT is unset it returns nil immediately.
+func WaitReachable(ctx context.Context, timeout time.Duration) error {
+	endpoint := strings.TrimSpace(os.Getenv("GARAGE_ENDPOINT"))
+	if endpoint == "" {
+		return nil
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return nil
+	}
+	addr := u.Host
+	if _, _, splitErr := net.SplitHostPort(addr); splitErr != nil {
+		if strings.EqualFold(u.Scheme, "https") {
+			addr = net.JoinHostPort(addr, "443")
+		} else {
+			addr = net.JoinHostPort(addr, "80")
+		}
+	}
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	dialer := &net.Dialer{Timeout: 1 * time.Second}
+	var lastErr error
+	for {
+		dialCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+		conn, dialErr := dialer.DialContext(dialCtx, "tcp", addr)
+		cancel()
+		if dialErr == nil {
+			_ = conn.Close()
+			return nil
+		}
+		lastErr = dialErr
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("garage %s not reachable within %s: %w", addr, timeout, lastErr)
+		}
+		timer := time.NewTimer(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func credentials() (endpoint, access, secret string) {
 	endpoint = strings.TrimRight(os.Getenv("GARAGE_ENDPOINT"), "/")
 	access = strings.TrimSpace(os.Getenv("GARAGE_ACCESS_KEY"))
@@ -198,31 +261,52 @@ func signed(ctx context.Context, method, bucket, key string, body []byte) (*http
 		region = "garage"
 	}
 	path := "/" + escape(bucket) + "/" + escapeKey(key)
-	now := time.Now().UTC()
-	amzDate := now.Format("20060102T150405Z")
-	day := now.Format("20060102")
 	sum := sha256.Sum256(body)
 	payload := hex.EncodeToString(sum[:])
-	canonHeaders := "host:" + u.Host + "\n" + "x-amz-content-sha256:" + payload + "\n" + "x-amz-date:" + amzDate + "\n"
-	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
-	canonical := method + "\n" + path + "\n\n" + canonHeaders + "\n" + signedHeaders + "\n" + payload
-	scope := day + "/" + region + "/s3/aws4_request"
-	canonSum := sha256.Sum256([]byte(canonical))
-	stringToSign := "AWS4-HMAC-SHA256\n" + amzDate + "\n" + scope + "\n" + hex.EncodeToString(canonSum[:])
-	sig := hex.EncodeToString(sign(secret, day, region, stringToSign))
-	var reader io.Reader
-	if body != nil {
-		reader = bytes.NewReader(body)
+
+	maxAttempts := len(s3RetryBackoffs) + 1
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		now := time.Now().UTC()
+		amzDate := now.Format("20060102T150405Z")
+		day := now.Format("20060102")
+		canonHeaders := "host:" + u.Host + "\n" + "x-amz-content-sha256:" + payload + "\n" + "x-amz-date:" + amzDate + "\n"
+		signedHeaders := "host;x-amz-content-sha256;x-amz-date"
+		canonical := method + "\n" + path + "\n\n" + canonHeaders + "\n" + signedHeaders + "\n" + payload
+		scope := day + "/" + region + "/s3/aws4_request"
+		canonSum := sha256.Sum256([]byte(canonical))
+		stringToSign := "AWS4-HMAC-SHA256\n" + amzDate + "\n" + scope + "\n" + hex.EncodeToString(canonSum[:])
+		sig := hex.EncodeToString(sign(secret, day, region, stringToSign))
+		var reader io.Reader
+		if body != nil {
+			reader = bytes.NewReader(body)
+		}
+		req, reqErr := http.NewRequestWithContext(ctx, method, endpoint+path, reader)
+		if reqErr != nil {
+			return nil, reqErr
+		}
+		req.Header.Set("Host", u.Host)
+		req.Header.Set("x-amz-date", amzDate)
+		req.Header.Set("x-amz-content-sha256", payload)
+		req.Header.Set("Authorization", fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s", access, scope, signedHeaders, sig))
+
+		resp, doErr := s3HTTPClient.Do(req)
+		if doErr == nil {
+			return resp, nil
+		}
+		lastErr = doErr
+		if ctx.Err() != nil || attempt >= len(s3RetryBackoffs) {
+			break
+		}
+		timer := time.NewTimer(s3RetryBackoffs[attempt])
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
 	}
-	req, err := http.NewRequestWithContext(ctx, method, endpoint+path, reader)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Host", u.Host)
-	req.Header.Set("x-amz-date", amzDate)
-	req.Header.Set("x-amz-content-sha256", payload)
-	req.Header.Set("Authorization", fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s", access, scope, signedHeaders, sig))
-	return s3HTTPClient.Do(req)
+	return nil, lastErr
 }
 
 func sign(secret, day, region, stringToSign string) []byte {

@@ -1,9 +1,7 @@
 FROM gradle:8.12-jdk21 AS psi
 WORKDIR /psi
 COPY services/worker-kotlin/psi /psi
-RUN gradle --no-daemon shadowJar
-COPY tests/data/repos/mentor-training/training-project /mentor
-RUN java -jar /psi/build/libs/secflow-psi.jar --mentor /mentor
+RUN gradle --no-daemon test shadowJar
 
 FROM golang:1.27.4-bookworm AS build
 WORKDIR /src

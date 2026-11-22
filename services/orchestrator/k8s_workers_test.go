@@ -77,6 +77,7 @@ func TestK8sWorkerScaler_CreateOnDemandScaleUpAndCooldownDown(t *testing.T) {
 		OrchestratorAddr:   "orchestrator.secflow-app.svc.cluster.local:50051",
 		ImageRegistry:      "secflow",
 		ImageTag:           "local",
+		ImagePullSecrets:   []string{"ghcr-pull-secret"},
 		DefaultCooldown:    60 * time.Second,
 		DefaultMaxReplicas: 4,
 	})
@@ -156,6 +157,9 @@ func assertHardenedWorkerDeployment(t *testing.T, dep *appsv1.Deployment, wantIm
 		t.Fatalf("egress tier label = %q, want %q", dep.Labels[workerPoolLabelEgressTier], wantTier)
 	}
 	podSpec := dep.Spec.Template.Spec
+	if len(podSpec.ImagePullSecrets) != 1 || podSpec.ImagePullSecrets[0].Name != "ghcr-pull-secret" {
+		t.Fatalf("imagePullSecrets = %+v, want [ghcr-pull-secret]", podSpec.ImagePullSecrets)
+	}
 	if podSpec.AutomountServiceAccountToken == nil || *podSpec.AutomountServiceAccountToken {
 		t.Fatal("expected automountServiceAccountToken=false on worker pod")
 	}

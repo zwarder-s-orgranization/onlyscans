@@ -59,8 +59,7 @@
 │   ├── graphql/             # GraphQL-схема Edge Gateway
 │   └── proto/               # Protobuf-контракты (buf) и сгенерированный Go-код
 ├── scripts/                 # Скрипты сборки и деплоя в k3s / k8s / kind (bash и PowerShell)
-├── services/                # Исходный код фронтенда (web) и всех бэкенд-сервисов
-└── tests/data/repos/        # Учебный тестовый корпус и каталог уязвимостей
+└── services/                # Исходный код фронтенда (web) и всех бэкенд-сервисов
 ```
 
 ---

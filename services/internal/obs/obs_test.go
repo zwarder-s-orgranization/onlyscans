@@ -268,3 +268,36 @@ func TestNormalizeHTTPPath(t *testing.T) {
 		})
 	}
 }
+
+func TestInitAppendsV1TracesPathForBaseEndpointURL(t *testing.T) {
+	gotPaths := make(chan string, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case gotPaths <- r.URL.Path:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", srv.URL)
+
+	shutdown, err := Init(t.Context(), "obs-otlp-path-test")
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	_, span := StartTaskSpan(t.Context(), "", "test.export")
+	span.End()
+	Shutdown(shutdown)
+
+	select {
+	case p := <-gotPaths:
+		if p != "/v1/traces" {
+			t.Fatalf("OTLP export path = %q, want /v1/traces", p)
+		}
+	default:
+		t.Fatal("expected OTLP trace export request to hit test server")
+	}
+}

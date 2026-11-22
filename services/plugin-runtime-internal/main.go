@@ -7,10 +7,12 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
 
 	secflowv1 "github.com/secflow/secflow/packages/proto/gen/go/secflow/v1"
+	"github.com/secflow/secflow/services/internal/blobstore"
 	"github.com/secflow/secflow/services/internal/declruntime"
 	"github.com/secflow/secflow/services/internal/envutil"
 	"github.com/secflow/secflow/services/internal/httpserver"
@@ -38,6 +40,10 @@ func main() {
 		} else {
 			workerID = "plugin-runtime-internal"
 		}
+	}
+
+	if err := blobstore.WaitReachable(ctx, 15*time.Second); err != nil && ctx.Err() == nil {
+		slog.Warn("garage reachability wait timed out", "err", err)
 	}
 
 	cfg := declruntime.Config{

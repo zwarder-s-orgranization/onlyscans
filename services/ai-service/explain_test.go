@@ -547,3 +547,22 @@ func TestRedactSensitive_PreservesEndpointURLPaths(t *testing.T) {
 		t.Fatalf("expected URL to remain intact: %q", gotSecret)
 	}
 }
+
+func TestBuildExplainSystemPrompt_EnforcesClarityAndSecurityRules(t *testing.T) {
+	t.Parallel()
+	prompt := buildExplainSystemPrompt()
+	for _, want := range []string{
+		"<finding_code_data>",
+		"allowedAdvisories",
+		"plain human language",
+		"NEVER use Markdown syntax",
+		"executiveSummary",
+		"plainLanguageRisk",
+		"businessImpact",
+		"remediationSteps",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("system prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}

@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// Dependency is one resolved Maven coordinate declared in a Gradle build.
+// Dependency is one resolved Maven coordinate declared in a Gradle or Maven build.
 type Dependency struct {
 	Group    string
 	Artifact string
@@ -19,18 +19,23 @@ type Dependency struct {
 	IsDev    bool
 }
 
-const scopePattern = `(?:implementation|api|runtimeOnly|compileOnly|testImplementation|testApi|testRuntimeOnly|testCompileOnly|androidTestImplementation|integrationTestImplementation|functionalTestImplementation)`
+const scopePattern = `(?:implementation|api|runtimeOnly|compileOnly|compile|runtime|kapt|ksp|annotationProcessor|developmentOnly|providedCompile|providedRuntime|testImplementation|testApi|testRuntimeOnly|testCompileOnly|testCompile|androidTestImplementation|integrationTestImplementation|functionalTestImplementation)`
 
 var (
-	depsHeaderRe = regexp.MustCompile(`(?m)^\s*dependencies\s*\{`)
+	depsHeaderRe        = regexp.MustCompile(`\bdependencies\s*\{`)
+	buildscriptHeaderRe = regexp.MustCompile(`\bbuildscript\s*\{`)
 
-	depParenCall = regexp.MustCompile(`(?m)\b(` + scopePattern + `)\s*\(\s*["']([^"']+)["']\s*\)`)
-	depGroovy    = regexp.MustCompile(`(?m)^\s*(` + scopePattern + `)\s+["']([^"']+)["']`)
-	addCall      = regexp.MustCompile(`(?s)\badd\s*\(\s*["'](` + scopePattern + `)["']\s*,\s*["']([^"']+)["']\s*,?\s*\)`)
+	depParenCall    = regexp.MustCompile(`(?m)\b(` + scopePattern + `)\s*\(\s*(?:(?:platform|enforcedPlatform|testFixtures)\s*\(\s*)?["']([^"']+)["']\s*\)?`)
+	depGroovy       = regexp.MustCompile(`(?m)^\s*(` + scopePattern + `)\s+(?:(?:platform|enforcedPlatform)\s*\(\s*)?["']([^"']+)["']`)
+	addCall         = regexp.MustCompile(`(?s)\badd\s*\(\s*["'](` + scopePattern + `)["']\s*,\s*["']([^"']+)["']\s*,?\s*\)`)
+	depThreeArgCall = regexp.MustCompile(`(?m)\b(` + scopePattern + `)\s*\(\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']\s*\)`)
+	depNamedArgCall = regexp.MustCompile(`(?s)\b(` + scopePattern + `)\s*\(\s*group\s*=\s*["']([^"']+)["']\s*,\s*name\s*=\s*["']([^"']+)["'](?:\s*,\s*version\s*=\s*["']([^"']*)["'])?\s*,?\s*\)`)
+	depGroovyMap    = regexp.MustCompile(`(?m)\b(` + scopePattern + `)\s+group\s*:\s*["']([^"']+)["']\s*,\s*name\s*:\s*["']([^"']+)["'](?:\s*,\s*version\s*:\s*["']([^"']*)["'])?`)
 
-	libsParenCall = regexp.MustCompile(`(?m)\b(` + scopePattern + `)\s*\(\s*libs\.([A-Za-z0-9_.]+)\s*\)`)
-	libsGroovy    = regexp.MustCompile(`(?m)^\s*(` + scopePattern + `)\s+libs\.([A-Za-z0-9_.]+)`)
-	libsAddCall   = regexp.MustCompile(`(?s)\badd\s*\(\s*["'](` + scopePattern + `)["']\s*,\s*libs\.([A-Za-z0-9_.]+)\s*,?\s*\)`)
+	libsParenCall    = regexp.MustCompile(`(?m)\b(` + scopePattern + `)\s*\(\s*(?:(?:platform|enforcedPlatform)\s*\(\s*)?libs\.([A-Za-z0-9_.]+)\s*\)?`)
+	libsGroovy       = regexp.MustCompile(`(?m)^\s*(` + scopePattern + `)\s+libs\.([A-Za-z0-9_.]+)`)
+	libsAddCall      = regexp.MustCompile(`(?s)\badd\s*\(\s*["'](` + scopePattern + `)["']\s*,\s*libs\.([A-Za-z0-9_.]+)\s*,?\s*\)`)
+	inlineCatalogVer = regexp.MustCompile(`\$\{libs\.versions\.([A-Za-z0-9_.]+)\.get\(\)\}`)
 
 	valLit         = regexp.MustCompile(`(?m)\b(?:val|var|def)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*String\s*)?=\s*["']([^"']*)["']`)
 	valGradleProp  = regexp.MustCompile(`(?m)\b(?:val|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*String\??\s*)?=\s*providers\.gradleProperty\(\s*["']([^"']+)["']\s*\)\.(?:get\(\)|orNull)`)
@@ -38,6 +43,10 @@ var (
 	valByProject   = regexp.MustCompile(`(?m)\bval\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*String\??\s*)?\s+by\s+project\b`)
 	valByExtra     = regexp.MustCompile(`(?m)\bval\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*String\??\s*)?\s+by\s+extra\b(?:\(\s*["']([^"']*)["']\s*\))?`)
 	extraBracket   = regexp.MustCompile(`(?m)\bextra\[\s*["']([^"']+)["']\s*\]\s*=\s*["']([^"']*)["']`)
+	extraSetCall   = regexp.MustCompile(`(?m)\bextra\.set\(\s*["']([^"']+)["']\s*,\s*["']([^"']*)["']\s*\)`)
+	extDotAssign   = regexp.MustCompile(`(?m)\bext\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([^"']*)["']`)
+	extBlockRe     = regexp.MustCompile(`(?s)\bext\s*\{([^}]*)\}`)
+	extBlockKVRe   = regexp.MustCompile(`(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([^"']*)["']`)
 	interp         = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_.-]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
 	inlineFindProp = regexp.MustCompile(`\$\{(?:project\.)?(?:findProperty|property)\(\s*["']([^"']+)["']\s*\)\}`)
 	inlineGradProp = regexp.MustCompile(`\$\{providers\.gradleProperty\(\s*["']([^"']+)["']\s*\)\.(?:get\(\)|orNull)\}`)
@@ -53,17 +62,22 @@ type gradleProject struct {
 	name string
 }
 
-// ParseProject reads build.gradle.kts (or build.gradle), gradle.properties,
-// gradle/libs.versions.toml, and an optional gradle.lockfile across the root
-// and any nested Gradle submodules, keeping dependency paths relative to root.
+// ParseProject reads Gradle (build.gradle.kts / build.gradle, gradle.properties,
+// gradle/libs.versions.toml, gradle.lockfile) and/or Maven (pom.xml) build files
+// across the root and nested submodules, keeping paths relative to root.
 func ParseProject(root string) ([]Dependency, error) {
 	projects, err := gradleProjects(root)
 	if err != nil {
 		return nil, err
 	}
-	if len(projects) == 0 {
-		return nil, fmt.Errorf("read gradle build file in %s: %w", root, os.ErrNotExist)
+	mavenDeps, mavenCount, mavenErr := parseMavenProjects(root)
+	if mavenErr != nil {
+		return nil, mavenErr
 	}
+	if len(projects) == 0 && mavenCount == 0 {
+		return nil, fmt.Errorf("read gradle/maven build file in %s: %w", root, os.ErrNotExist)
+	}
+
 	var all []Dependency
 	for _, project := range projects {
 		rel, relErr := filepath.Rel(root, project.dir)
@@ -82,6 +96,7 @@ func ParseProject(root string) ([]Dependency, error) {
 		}
 		all = append(all, deps...)
 	}
+	all = append(all, mavenDeps...)
 	return all, nil
 }
 
@@ -96,7 +111,7 @@ func gradleProjects(root string) ([]gradleProject, error) {
 	seenDirs := map[string]struct{}{}
 	var projectDirs []string
 	walked := 0
-	err = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(root, func(p string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
@@ -105,7 +120,7 @@ func gradleProjects(root string) ([]gradleProject, error) {
 			return filepath.SkipAll
 		}
 		if d.IsDir() {
-			if path != root && skipGradleDir(d.Name()) {
+			if p != root && skipGradleDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -116,7 +131,7 @@ func gradleProjects(root string) ([]gradleProject, error) {
 		if d.Name() != "build.gradle.kts" && d.Name() != "build.gradle" {
 			return nil
 		}
-		dir := filepath.Dir(path)
+		dir := filepath.Dir(p)
 		if _, exists := seenDirs[dir]; !exists {
 			if len(projectDirs) >= maxGradleProjects {
 				return filepath.SkipAll
@@ -166,11 +181,16 @@ func buildFileName(dir string) (string, bool) {
 
 func skipGradleDir(name string) bool {
 	switch name {
-	case ".git", ".gradle", "build", "node_modules", ".idea":
+	case ".git", ".gradle", "build", "node_modules", ".idea", "target":
 		return true
 	default:
 		return false
 	}
+}
+
+type depBlock struct {
+	content   string
+	startLine int
 }
 
 func parseBuildFile(root, projectDir, buildName string) ([]Dependency, error) {
@@ -179,7 +199,8 @@ func parseBuildFile(root, projectDir, buildName string) ([]Dependency, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read gradle build file in %s: %w", projectDir, err)
 	}
-	text := string(raw)
+	text := stripCommentsPreserveLines(string(raw))
+
 	props := readProperties(filepath.Join(root, "gradle.properties"))
 	if projectDir != root {
 		for k, v := range readProperties(filepath.Join(projectDir, "gradle.properties")) {
@@ -188,27 +209,36 @@ func parseBuildFile(root, projectDir, buildName string) ([]Dependency, error) {
 	}
 	vars := extractVars(text, props)
 	catalog := readVersionCatalog(filepath.Join(projectDir, "gradle", "libs.versions.toml"))
-	if len(catalog) == 0 && projectDir != root {
+	if len(catalog.libs) == 0 && len(catalog.versions) == 0 && projectDir != root {
 		catalog = readVersionCatalog(filepath.Join(root, "gradle", "libs.versions.toml"))
 	}
+	locked := readLockfile(root, projectDir)
 
-	block, blockLine := dependenciesBlock(text)
-	if block == "" {
+	blocks := dependenciesBlocks(text)
+	if len(blocks) == 0 {
 		return nil, nil
 	}
-	cleaned := stripLineComments(block)
 
 	var deps []Dependency
 	indexByKey := make(map[string]int)
 
 	addDep := func(scope, g, a, v, relPath string, absLine int) {
-		if g == "" || a == "" || v == "" || strings.Contains(v, "$") {
+		g = strings.TrimSpace(g)
+		a = strings.TrimSpace(a)
+		v = strings.TrimSpace(v)
+		if g == "" || a == "" {
+			return
+		}
+		// Resolve versionless (BOM-managed) or locked version via gradle.lockfile
+		if lv, ok := locked[g+":"+a]; ok && lv != "" {
+			v = lv
+		}
+		if v == "" || strings.Contains(v, "$") {
 			return
 		}
 		isDev := isDevScope(scope)
 		key := g + ":" + a + ":" + v
 		if idx, exists := indexByKey[key]; exists {
-			// If a dependency is declared in both dev and runtime scopes, prefer runtime.
 			if deps[idx].IsDev && !isDev {
 				deps[idx].IsDev = false
 				deps[idx].Scope = scope
@@ -228,49 +258,95 @@ func parseBuildFile(root, projectDir, buildName string) ([]Dependency, error) {
 	}
 
 	addCoord := func(scope, coord string, absLine int) {
-		g, a, v, ok := splitCoord(resolve(coord, vars, props))
+		resolved := resolve(coord, vars, props, catalog.versions)
+		g, a, v, ok := splitCoordAllowVersionless(resolved)
 		if !ok {
 			return
 		}
 		addDep(scope, g, a, v, buildName, absLine)
 	}
 
-	for _, re := range []*regexp.Regexp{depParenCall, depGroovy, addCall} {
-		for _, m := range re.FindAllStringSubmatchIndex(cleaned, -1) {
-			scope := cleaned[m[2]:m[3]]
-			coord := cleaned[m[4]:m[5]]
-			line := blockLine + lineAt(cleaned, m[0]) - 1
-			addCoord(scope, coord, line)
-		}
-	}
+	for _, blk := range blocks {
+		cleaned := blk.content
+		blockLine := blk.startLine
 
-	for _, re := range []*regexp.Regexp{libsParenCall, libsGroovy, libsAddCall} {
-		for _, m := range re.FindAllStringSubmatchIndex(cleaned, -1) {
+		for _, re := range []*regexp.Regexp{depParenCall, depGroovy, addCall} {
+			for _, m := range re.FindAllStringSubmatchIndex(cleaned, -1) {
+				scope := cleaned[m[2]:m[3]]
+				coord := cleaned[m[4]:m[5]]
+				line := blockLine + lineAt(cleaned, m[0]) - 1
+				addCoord(scope, coord, line)
+			}
+		}
+
+		for _, m := range depThreeArgCall.FindAllStringSubmatchIndex(cleaned, -1) {
 			scope := cleaned[m[2]:m[3]]
-			accessor := cleaned[m[4]:m[5]]
+			g := resolve(cleaned[m[4]:m[5]], vars, props, catalog.versions)
+			a := resolve(cleaned[m[6]:m[7]], vars, props, catalog.versions)
+			v := resolve(cleaned[m[8]:m[9]], vars, props, catalog.versions)
 			line := blockLine + lineAt(cleaned, m[0]) - 1
-			if entry, ok := lookupCatalogLib(catalog, accessor); ok {
-				addDep(scope, entry.group, entry.artifact, entry.version, buildName, line)
+			addDep(scope, g, a, v, buildName, line)
+		}
+
+		for _, re := range []*regexp.Regexp{depNamedArgCall, depGroovyMap} {
+			for _, m := range re.FindAllStringSubmatchIndex(cleaned, -1) {
+				scope := cleaned[m[2]:m[3]]
+				g := resolve(cleaned[m[4]:m[5]], vars, props, catalog.versions)
+				a := resolve(cleaned[m[6]:m[7]], vars, props, catalog.versions)
+				v := ""
+				if m[8] >= 0 && m[9] >= 0 {
+					v = resolve(cleaned[m[8]:m[9]], vars, props, catalog.versions)
+				}
+				line := blockLine + lineAt(cleaned, m[0]) - 1
+				addDep(scope, g, a, v, buildName, line)
+			}
+		}
+
+		for _, re := range []*regexp.Regexp{libsParenCall, libsGroovy, libsAddCall} {
+			for _, m := range re.FindAllStringSubmatchIndex(cleaned, -1) {
+				scope := cleaned[m[2]:m[3]]
+				accessor := cleaned[m[4]:m[5]]
+				line := blockLine + lineAt(cleaned, m[0]) - 1
+				if strings.HasPrefix(accessor, "bundles.") {
+					bundleKey := strings.TrimPrefix(accessor, "bundles.")
+					for _, entry := range lookupCatalogBundle(catalog, bundleKey) {
+						addDep(scope, entry.group, entry.artifact, entry.version, buildName, line)
+					}
+					continue
+				}
+				if entry, ok := lookupCatalogLib(catalog.libs, accessor); ok {
+					addDep(scope, entry.group, entry.artifact, entry.version, buildName, line)
+				}
 			}
 		}
 	}
 
-	applyLock(root, projectDir, deps)
 	return deps, nil
 }
 
 func isDevScope(scope string) bool {
 	low := strings.ToLower(scope)
-	return strings.HasPrefix(low, "test") || strings.Contains(low, "test")
+	return strings.HasPrefix(low, "test") || strings.Contains(low, "test") || low == "developmentonly"
 }
 
 func extractVars(text string, props map[string]string) map[string]string {
-	vars := make(map[string]string, len(props)+8)
+	vars := make(map[string]string, len(props)+16)
 	for _, m := range valLit.FindAllStringSubmatch(text, -1) {
 		vars[m[1]] = m[2]
 	}
 	for _, m := range extraBracket.FindAllStringSubmatch(text, -1) {
 		vars[m[1]] = m[2]
+	}
+	for _, m := range extraSetCall.FindAllStringSubmatch(text, -1) {
+		vars[m[1]] = m[2]
+	}
+	for _, m := range extDotAssign.FindAllStringSubmatch(text, -1) {
+		vars[m[1]] = m[2]
+	}
+	for _, bm := range extBlockRe.FindAllStringSubmatch(text, -1) {
+		for _, kv := range extBlockKVRe.FindAllStringSubmatch(bm[1], -1) {
+			vars[kv[1]] = kv[2]
+		}
 	}
 	for _, m := range valGradleProp.FindAllStringSubmatch(text, -1) {
 		if v, ok := props[m[2]]; ok {
@@ -298,34 +374,65 @@ func extractVars(text string, props map[string]string) map[string]string {
 	return vars
 }
 
-func stripLineComments(block string) string {
-	lines := strings.Split(block, "\n")
-	for i, line := range lines {
-		if idx := findCommentStart(line); idx >= 0 {
-			lines[i] = line[:idx]
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-func findCommentStart(line string) int {
+// stripCommentsPreserveLines removes // line comments and /* ... */ block comments
+// while preserving newlines so line numbers remain exact.
+func stripCommentsPreserveLines(src string) string {
+	var b strings.Builder
+	b.Grow(len(src))
 	inDouble := false
 	inSingle := false
-	for i := 0; i < len(line)-1; i++ {
-		ch := line[i]
-		if ch == '\\' && (inDouble || inSingle) {
+	inBlock := false
+	for i := 0; i < len(src); i++ {
+		ch := src[i]
+		if inBlock {
+			if ch == '*' && i+1 < len(src) && src[i+1] == '/' {
+				inBlock = false
+				b.WriteString("  ")
+				i++
+			} else if ch == '\n' {
+				b.WriteByte('\n')
+			} else {
+				b.WriteByte(' ')
+			}
+			continue
+		}
+		if (inDouble || inSingle) && ch == '\\' && i+1 < len(src) {
+			b.WriteByte(ch)
+			b.WriteByte(src[i+1])
 			i++
 			continue
 		}
 		if ch == '"' && !inSingle {
 			inDouble = !inDouble
-		} else if ch == '\'' && !inDouble {
-			inSingle = !inSingle
-		} else if !inDouble && !inSingle && ch == '/' && line[i+1] == '/' {
-			return i
+			b.WriteByte(ch)
+			continue
 		}
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			b.WriteByte(ch)
+			continue
+		}
+		if !inDouble && !inSingle && ch == '/' && i+1 < len(src) {
+			if src[i+1] == '/' {
+				for i < len(src) && src[i] != '\n' {
+					b.WriteByte(' ')
+					i++
+				}
+				if i < len(src) && src[i] == '\n' {
+					b.WriteByte('\n')
+				}
+				continue
+			}
+			if src[i+1] == '*' {
+				inBlock = true
+				b.WriteString("  ")
+				i++
+				continue
+			}
+		}
+		b.WriteByte(ch)
 	}
-	return -1
+	return b.String()
 }
 
 type catalogLib struct {
@@ -334,23 +441,35 @@ type catalogLib struct {
 	version  string
 }
 
+type versionCatalog struct {
+	versions map[string]string
+	libs     map[string]catalogLib
+	bundles  map[string][]string
+}
+
 var (
 	tomlKVRe      = regexp.MustCompile(`^([A-Za-z0-9_.-]+)\s*=\s*(.+)$`)
 	tomlStrRe     = regexp.MustCompile(`^["']([^"']*)["']$`)
 	tomlFieldRe   = regexp.MustCompile(`([A-Za-z0-9_.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|\{([^}]*)\})`)
 	tomlNestedVer = regexp.MustCompile(`(?:strictly|require|prefer)\s*=\s*["']([^"']+)["']`)
+	tomlQuotedRe  = regexp.MustCompile(`["']([^"']+)["']`)
 )
 
-func readVersionCatalog(path string) map[string]catalogLib {
+func readVersionCatalog(path string) versionCatalog {
+	cat := versionCatalog{
+		versions: make(map[string]string),
+		libs:     make(map[string]catalogLib),
+		bundles:  make(map[string][]string),
+	}
 	raw, err := readRegularFile(path)
 	if err != nil {
-		return nil
+		return cat
 	}
-	versions := make(map[string]string)
 	rawLibs := make(map[string]string)
 	section := ""
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(stripTomlComment(line))
+	lines := strings.Split(string(raw), "\n")
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(stripTomlComment(lines[i]))
 		if line == "" {
 			continue
 		}
@@ -363,34 +482,58 @@ func readVersionCatalog(path string) map[string]catalogLib {
 			continue
 		}
 		key, val := strings.TrimSpace(m[1]), strings.TrimSpace(m[2])
+		// Handle multi-line array values in [bundles]
+		if section == "bundles" && strings.HasPrefix(val, "[") && !strings.Contains(val, "]") {
+			var sb strings.Builder
+			sb.WriteString(val)
+			for i+1 < len(lines) {
+				i++
+				next := strings.TrimSpace(stripTomlComment(lines[i]))
+				sb.WriteByte(' ')
+				sb.WriteString(next)
+				if strings.Contains(next, "]") {
+					break
+				}
+			}
+			val = sb.String()
+		}
 		switch section {
 		case "versions":
 			if sm := tomlStrRe.FindStringSubmatch(val); sm != nil {
-				versions[key] = sm[1]
+				cat.versions[normalizeCatalogKey(key)] = sm[1]
+				cat.versions[key] = sm[1]
 			} else if strings.HasPrefix(val, "{") {
 				if nm := tomlNestedVer.FindStringSubmatch(val); nm != nil {
-					versions[key] = nm[1]
+					cat.versions[normalizeCatalogKey(key)] = nm[1]
+					cat.versions[key] = nm[1]
 				}
 			}
 		case "libraries":
 			rawLibs[key] = val
+		case "bundles":
+			var refs []string
+			for _, qm := range tomlQuotedRe.FindAllStringSubmatch(val, -1) {
+				refs = append(refs, normalizeCatalogKey(qm[1]))
+			}
+			if len(refs) > 0 {
+				cat.bundles[normalizeCatalogKey(key)] = refs
+			}
 		}
 	}
 
-	out := make(map[string]catalogLib, len(rawLibs))
 	for alias, val := range rawLibs {
-		entry, ok := parseCatalogLibValue(val, versions)
+		entry, ok := parseCatalogLibValue(val, cat.versions)
 		if !ok {
 			continue
 		}
-		out[normalizeCatalogKey(alias)] = entry
+		cat.libs[normalizeCatalogKey(alias)] = entry
 	}
-	return out
+	return cat
 }
 
 func parseCatalogLibValue(val string, versions map[string]string) (catalogLib, bool) {
 	if sm := tomlStrRe.FindStringSubmatch(val); sm != nil {
-		g, a, v, ok := splitCoord(sm[1])
+		g, a, v, ok := splitCoordAllowVersionless(sm[1])
 		if !ok {
 			return catalogLib{}, false
 		}
@@ -428,9 +571,12 @@ func parseCatalogLibValue(val string, versions map[string]string) (catalogLib, b
 	if version == "" {
 		if ref := fields["version.ref"]; ref != "" {
 			version = versions[ref]
+			if version == "" {
+				version = versions[normalizeCatalogKey(ref)]
+			}
 		}
 	}
-	if group == "" || artifact == "" || version == "" {
+	if group == "" || artifact == "" {
 		return catalogLib{}, false
 	}
 	return catalogLib{group: group, artifact: artifact, version: version}, true
@@ -447,6 +593,20 @@ func lookupCatalogLib(catalog map[string]catalogLib, accessor string) (catalogLi
 	}
 	entry, ok := catalog[normalizeCatalogKey(accessor)]
 	return entry, ok
+}
+
+func lookupCatalogBundle(cat versionCatalog, bundleAccessor string) []catalogLib {
+	refs := cat.bundles[normalizeCatalogKey(bundleAccessor)]
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]catalogLib, 0, len(refs))
+	for _, ref := range refs {
+		if entry, ok := cat.libs[ref]; ok {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 func stripTomlComment(line string) string {
@@ -469,39 +629,75 @@ func stripTomlComment(line string) string {
 	return line
 }
 
-func dependenciesBlock(text string) (string, int) {
-	idx := -1
-	if loc := depsHeaderRe.FindStringIndex(text); loc != nil {
-		idx = loc[0]
-	} else {
-		idx = strings.Index(text, "dependencies")
+// dependenciesBlocks returns all project dependencies { ... } blocks in text,
+// skipping buildscript { dependencies { ... } } blocks and respecting string quotes.
+func dependenciesBlocks(text string) []depBlock {
+	// Identify buildscript { ... } ranges to skip buildscript classpath blocks.
+	var skipRanges [][2]int
+	for _, loc := range buildscriptHeaderRe.FindAllStringIndex(text, -1) {
+		bracePos := loc[1] - 1
+		if endPos := findMatchingBrace(text, bracePos); endPos > bracePos {
+			skipRanges = append(skipRanges, [2]int{loc[0], endPos})
+		}
 	}
-	if idx < 0 {
-		return "", 1
-	}
-	rest := text[idx:]
-	brace := strings.Index(rest, "{")
-	if brace < 0 {
-		return "", 1
-	}
-	depth := 0
-	start := -1
-	for i, r := range rest[brace:] {
-		switch r {
-		case '{':
-			depth++
-			if start < 0 {
-				start = brace + i + 1
+	inSkip := func(pos int) bool {
+		for _, r := range skipRanges {
+			if pos >= r[0] && pos <= r[1] {
+				return true
 			}
-		case '}':
+		}
+		return false
+	}
+
+	var blocks []depBlock
+	for _, loc := range depsHeaderRe.FindAllStringIndex(text, -1) {
+		if inSkip(loc[0]) {
+			continue
+		}
+		bracePos := loc[1] - 1
+		endPos := findMatchingBrace(text, bracePos)
+		if endPos <= bracePos {
+			continue
+		}
+		blocks = append(blocks, depBlock{
+			content:   text[bracePos+1 : endPos],
+			startLine: lineAt(text, bracePos+1),
+		})
+	}
+	return blocks
+}
+
+func findMatchingBrace(text string, openBrace int) int {
+	depth := 0
+	inDouble := false
+	inSingle := false
+	for i := openBrace; i < len(text); i++ {
+		ch := text[i]
+		if (inDouble || inSingle) && ch == '\\' && i+1 < len(text) {
+			i++
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if inDouble || inSingle {
+			continue
+		}
+		if ch == '{' {
+			depth++
+		} else if ch == '}' {
 			depth--
 			if depth == 0 {
-				block := rest[start : brace+i]
-				return block, lineAt(text, idx+start)
+				return i
 			}
 		}
 	}
-	return "", 1
+	return -1
 }
 
 func lineAt(text string, bytePos int) int {
@@ -514,7 +710,14 @@ func lineAt(text string, bytePos int) int {
 	return strings.Count(text[:bytePos], "\n") + 1
 }
 
-func resolve(coord string, vars, props map[string]string) string {
+func resolve(coord string, vars, props, catalogVersions map[string]string) string {
+	coord = inlineCatalogVer.ReplaceAllStringFunc(coord, func(m string) string {
+		sub := inlineCatalogVer.FindStringSubmatch(m)
+		if v, ok := catalogVersions[normalizeCatalogKey(sub[1])]; ok {
+			return v
+		}
+		return m
+	})
 	coord = inlineGradProp.ReplaceAllStringFunc(coord, func(m string) string {
 		sub := inlineGradProp.FindStringSubmatch(m)
 		if v, ok := props[sub[1]]; ok {
@@ -545,16 +748,24 @@ func resolve(coord string, vars, props map[string]string) string {
 	})
 }
 
-func splitCoord(coord string) (string, string, string, bool) {
-	parts := strings.Split(coord, ":")
-	if len(parts) < 3 {
+func splitCoordAllowVersionless(coord string) (string, string, string, bool) {
+	parts := strings.Split(strings.TrimSpace(coord), ":")
+	if len(parts) < 2 {
 		return "", "", "", false
 	}
-	version := strings.Join(parts[2:], ":")
-	if version == "" || strings.Contains(version, "$") {
+	g, a := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	if g == "" || a == "" || strings.Contains(g, " ") || strings.Contains(a, " ") {
 		return "", "", "", false
 	}
-	return parts[0], parts[1], version, true
+	if len(parts) == 2 {
+		return g, a, "", true
+	}
+	// Trim optional Maven classifier/packaging suffix like `1.2.3@jar`
+	ver := strings.TrimSpace(parts[2])
+	if at := strings.IndexByte(ver, '@'); at >= 0 {
+		ver = ver[:at]
+	}
+	return g, a, ver, true
 }
 
 func readProperties(path string) map[string]string {
@@ -579,30 +790,32 @@ func readProperties(path string) map[string]string {
 	return out
 }
 
-func applyLock(root, projectDir string, deps []Dependency) {
-	raw, err := readRegularFile(filepath.Join(projectDir, "gradle.lockfile"))
-	if err != nil && projectDir != root {
-		raw, err = readRegularFile(filepath.Join(root, "gradle.lockfile"))
-	}
-	if err != nil {
-		return
-	}
+func readLockfile(root, projectDir string) map[string]string {
 	locked := map[string]string{}
-	for _, line := range strings.Split(string(raw), "\n") {
-		// group:artifact:version=configurations
-		left, _, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
+	load := func(p string) {
+		raw, err := readRegularFile(p)
+		if err != nil {
+			return
 		}
-		parts := strings.Split(left, ":")
-		if len(parts) < 3 {
-			continue
+		for _, line := range strings.Split(string(raw), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			left, _, ok := strings.Cut(line, "=")
+			if !ok {
+				continue
+			}
+			parts := strings.Split(left, ":")
+			if len(parts) < 3 {
+				continue
+			}
+			locked[parts[0]+":"+parts[1]] = parts[2]
 		}
-		locked[parts[0]+":"+parts[1]] = parts[2]
 	}
-	for i := range deps {
-		if v, ok := locked[deps[i].Group+":"+deps[i].Artifact]; ok {
-			deps[i].Version = v
-		}
+	if projectDir != root {
+		load(filepath.Join(root, "gradle.lockfile"))
 	}
+	load(filepath.Join(projectDir, "gradle.lockfile"))
+	return locked
 }

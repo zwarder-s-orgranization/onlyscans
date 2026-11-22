@@ -299,6 +299,10 @@ spec:
               value: {{ .Values.global.imageTag | quote }}
             - name: WORKER_IMAGE_PULL_POLICY
               value: {{ .Values.global.imagePullPolicy | quote }}
+            {{- if .Values.global.imagePullSecrets }}
+            - name: WORKER_IMAGE_PULL_SECRETS
+              value: "{{- range $i, $s := .Values.global.imagePullSecrets }}{{- if $i }},{{- end }}{{ $s.name }}{{- end }}"
+            {{- end }}
             - name: WORKER_PROVISION_TIMEOUT_SECONDS
               value: {{ .Values.workerScaling.provisionTimeoutSeconds | quote }}
             - name: WORKER_SCALE_WAIT_TIMEOUT_SECONDS

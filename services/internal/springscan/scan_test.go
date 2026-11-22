@@ -172,6 +172,22 @@ func TestScanWithOptions(t *testing.T) {
 			wantCount: 1,
 			wantClass: "actuator-exposure",
 		},
+		{
+			name: "yaml sequence wildcard exposure and multi-document profile are detected",
+			files: map[string]string{
+				"application.yml": "management:\n  endpoints:\n    web:\n      exposure:\n        include:\n          - health\n          - '*'\n---\nspring:\n  datasource:\n    password: ProdDbPassword99\n",
+			},
+			opts:      DefaultOptions(),
+			wantCount: 2,
+		},
+		{
+			name: "non-secret password metadata keys and placeholders do not false positive",
+			files: map[string]string{
+				"application.yml": "security:\n  password-policy: strict\n  password-encoder: bcrypt\n  max-password-length: 64\nspring:\n  datasource:\n    password: CHANGE_ME\n",
+			},
+			opts:      DefaultOptions(),
+			wantCount: 0,
+		},
 	}
 
 	for _, tt := range tests {

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -136,6 +137,10 @@ func Init(ctx context.Context, serviceName string) (func(context.Context) error,
 
 func buildOTLPHTTPOptions(endpoint string) []otlptracehttp.Option {
 	if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+		if u, err := url.Parse(endpoint); err == nil && (u.Path == "" || u.Path == "/") {
+			u.Path = "/v1/traces"
+			endpoint = u.String()
+		}
 		return []otlptracehttp.Option{otlptracehttp.WithEndpointURL(endpoint)}
 	}
 	return []otlptracehttp.Option{

@@ -241,6 +241,7 @@ func buildWorkflowSystemPrompt(catalog *pluginCatalog) string {
 		"(3) Every edge sourceHandle MUST match a declared output port of its source node (for logic.switch maxSeverity use CRITICAL|HIGH|MEDIUM_LOW|CLEAN; for gate.policy use PASS|WARN|FAIL; for logic.if/logic.compare use true|false; for logic.regex use match|nomatch). " +
 		"(4) NEVER include real secrets or secretBindings in the output; leave credentials unbound. " +
 		"(5) No cycles. Always use the term Workflow (never scenario or pipeline). " +
+		"WRITING STYLE: Write suggestedName (short and clear, 3-6 words), suggestedDescription (1-2 simple sentences), rationale (1-3 plain sentences explaining why these steps were chosen), and concise human-readable node labels in the requested language using simple words and clean plain text (no raw Markdown or unexplained jargon). " +
 		"Return STRICT JSON only (no markdown): " +
 		`{"suggestedName":"...","suggestedDescription":"...","rationale":"...","nodes":[{"id":"n1","pluginId":"...","label":"...","params":{}}],"edges":[{"source":"n1","target":"n2","sourceHandle":"default"}]}`
 }

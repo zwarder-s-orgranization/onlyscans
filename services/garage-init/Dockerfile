@@ -11,7 +11,7 @@ WORKDIR /src/services
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/service ./garage-init
 
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY tests/data/repos/mentor-training/vulnerability-database/vulnerabilities.json /mentor-training/vulnerability-database/vulnerabilities.json
 COPY --from=build /out/service /service
+ENV OSV_MAVEN_ZIP_URL=https://osv-vulnerabilities.storage.googleapis.com/Maven/all.zip
 USER nonroot:nonroot
 ENTRYPOINT ["/service"]

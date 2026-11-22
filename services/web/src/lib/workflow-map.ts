@@ -903,6 +903,102 @@ export interface NodeRunPaint {
   redactedPreview?: unknown;
 }
 
+/** A rerun starts before the server has node rows, so the history board needs a live copy of the parent steps. */
+export function optimisticRerunRecord(
+  source: WorkflowRunRecord,
+  newRunId: string,
+  nodeId: string,
+  affected: ReadonlySet<string>,
+): WorkflowRunRecord {
+  const steps = source.steps.map((step) => {
+    const id = step.nodeId || step.id;
+    if (!affected.has(id)) return step;
+    if (id === nodeId) {
+      return { ...step, status: "RUNNING" as const, durationMs: 0, summary: "Выполняется" };
+    }
+    return { ...step, status: "IDLE" as const, durationMs: 0, summary: "Ожидает" };
+  });
+  if (!steps.some((step) => (step.nodeId || step.id) === nodeId)) {
+    steps.push({
+      id: nodeId,
+      nodeId,
+      nodeLabel: nodeId,
+      pluginId: source.steps.find((step) => (step.nodeId || step.id) === nodeId)?.pluginId ?? "logic.merge",
+      family: "logic",
+      status: "RUNNING",
+      durationMs: 0,
+      summary: "Выполняется",
+    });
+  }
+  return {
+    ...source,
+    id: newRunId,
+    status: "RUNNING",
+    policyGate: "NONE",
+    startedAt: "Только что",
+    durationLabel: "идёт",
+    parentRunId: source.id,
+    rerunFromNodeId: nodeId,
+    errorMessage: null,
+    critCount: 0,
+    highCount: 0,
+    mediumCount: 0,
+    lowCount: 0,
+    nodesCount: steps.length,
+    wavesCount: steps.length,
+    steps,
+    findingsStats: undefined,
+    sbom: null,
+    aiReport: null,
+    lastSeqId: 0,
+  };
+}
+
+/** Keep in-flight steps when a poll snapshot has not recorded them yet. */
+export function mergePolledRun(
+  existing: WorkflowRunRecord | undefined,
+  incoming: WorkflowRunRecord,
+): WorkflowRunRecord {
+  if (!existing) return incoming;
+  if (incoming.status === "SUCCEEDED" || incoming.status === "FAILED" || incoming.status === "CANCELLED") {
+    return incoming;
+  }
+  if (incoming.steps.length === 0) {
+    return { ...incoming, steps: existing.steps };
+  }
+  const seen = new Set(incoming.steps.map((step) => step.nodeId || step.id));
+  const pending = existing.steps.filter((step) => {
+    const id = step.nodeId || step.id;
+    return !seen.has(id) && (step.status === "RUNNING" || step.status === "IDLE");
+  });
+  return { ...incoming, steps: [...incoming.steps, ...pending] };
+}
+
+/** Apply one live node event onto the run the history board is painting. */
+export function applyNodeStatusToRun(
+  run: WorkflowRunRecord,
+  nodeId: string,
+  serverStatus: string,
+): WorkflowRunRecord {
+  const status = stepStatus(serverStatus);
+  let found = false;
+  const steps = run.steps.map((step) => {
+    if ((step.nodeId || step.id) !== nodeId) return step;
+    found = true;
+    return {
+      ...step,
+      status,
+      summary: status === "RUNNING" ? "Выполняется" : step.summary,
+    };
+  });
+  if (!found) return run;
+  return {
+    ...run,
+    status: run.status === "QUEUED" || run.status === "RUNNING" ? "RUNNING" : run.status,
+    steps,
+  };
+}
+
 export function statusesFromRun(run: ServerRun): Record<string, NodeRunPaint> {
   const out: Record<string, NodeRunPaint> = {};
   for (const node of run.nodeRuns ?? []) {

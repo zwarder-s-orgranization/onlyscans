@@ -64,17 +64,15 @@ export async function captureViewport(
       return true;
     },
     onCloneNode: (cloned) => {
-      if (!(cloned instanceof HTMLElement)) return;
-      // Offset cloned body by current scroll so the captured rectangle matches the viewport.
-      if (cloned.tagName === "BODY") {
-        cloned.style.width = `${width}px`;
-        if (sx !== 0 || sy !== 0) {
-          cloned.style.transform = `translate(${-sx}px, ${-sy}px)`;
-          cloned.style.transformOrigin = "0 0";
-        }
-      } else if (sy !== 0 && cloned.tagName === "HEADER") {
-        // Keep sticky top headers locked to viewport y=0 so their bottom border never jumps.
-        cloned.style.transform = `translateY(${sy}px)`;
+      if (!(cloned instanceof HTMLElement) || cloned.tagName !== "BODY") return;
+      // The clone is styled inside a foreignObject, where the page's margin
+      // reset does not apply and the user-agent body margin (8px) comes back.
+      // That shifts the whole snapshot down and right, so the ink edge ghosts.
+      cloned.style.setProperty("margin", "0", "important");
+      cloned.style.width = `${width}px`;
+      if (sx !== 0 || sy !== 0) {
+        cloned.style.transform = `translate(${-sx}px, ${-sy}px)`;
+        cloned.style.transformOrigin = "0 0";
       }
     },
   });

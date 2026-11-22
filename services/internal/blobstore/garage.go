@@ -8,11 +8,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/secflow/secflow/services/internal/gradleparser"
 )
 
 var (
@@ -37,14 +39,14 @@ func Ensure(ctx context.Context) error {
 	if base == "" || token == "" || os.Getenv("GARAGE_ENDPOINT") == "" {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	adminCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	if err := ensureLayout(ctx, base, token); err != nil {
+	if err := ensureLayout(adminCtx, base, token); err != nil {
 		return err
 	}
 	ids := make([]string, 0, len(requiredBuckets))
 	for _, name := range requiredBuckets {
-		id, err := ensureBucket(ctx, base, token, name)
+		id, err := ensureBucket(adminCtx, base, token, name)
 		if err != nil {
 			return err
 		}
@@ -59,7 +61,7 @@ func Ensure(ctx context.Context) error {
 	}
 	if !ok {
 		var err error
-		access, secret, err = createKey(ctx, base, token)
+		access, secret, err = createKey(adminCtx, base, token)
 		if err != nil {
 			return err
 		}
@@ -73,7 +75,7 @@ func Ensure(ctx context.Context) error {
 	}
 	remember(access, secret)
 	for _, id := range ids {
-		if err := allowKey(ctx, base, token, id, access); err != nil {
+		if err := allowKey(adminCtx, base, token, id, access); err != nil {
 			return err
 		}
 	}
@@ -84,53 +86,59 @@ func seedDefaultCatalog(ctx context.Context) error {
 	if !Configured() {
 		return nil
 	}
-	if existing, err := Get(ctx, "secflow-catalogs", "default.json"); err == nil && len(existing) > 0 {
-		return nil
+	refresh := strings.EqualFold(strings.TrimSpace(os.Getenv("REFRESH_CATALOG")), "1") ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv("REFRESH_CATALOG")), "true")
+	if !refresh {
+		if existing, err := Get(ctx, "secflow-catalogs", "default.json"); err == nil && len(existing) > 0 {
+			return nil
+		}
 	}
-	raw, ok := readDefaultCatalogFile()
+	raw, ok, err := loadDefaultCatalogBytes(ctx)
+	if err != nil {
+		return fmt.Errorf("fetch default vulnerability catalog: %w", err)
+	}
 	if !ok || len(raw) == 0 {
 		return nil
 	}
-	if err := Put(ctx, "secflow-catalogs", "default.json", raw); err != nil {
+	putCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	if err := Put(putCtx, "secflow-catalogs", "default.json", raw); err != nil {
 		return fmt.Errorf("seed default catalog: %w", err)
 	}
 	return nil
 }
 
-func readDefaultCatalogFile() ([]byte, bool) {
-	var candidates []string
-	if p := os.Getenv("DEFAULT_CATALOG_PATH"); p != "" {
-		candidates = append(candidates, p)
-	}
-	if p := os.Getenv("CATALOG_PATH"); p != "" {
-		candidates = append(candidates, p)
-	}
-	if dir, err := os.Getwd(); err == nil {
-		for {
-			candidates = append(candidates,
-				filepath.Join(dir, "tests", "data", "repos", "mentor-training", "vulnerability-database", "maven-vulnerabilities.json"),
-				filepath.Join(dir, "tests", "data", "repos", "mentor-training", "vulnerability-database", "vulnerabilities.json"),
-				filepath.Join(dir, "mentor-training", "vulnerability-database", "maven-vulnerabilities.json"),
-				filepath.Join(dir, "mentor-training", "vulnerability-database", "vulnerabilities.json"),
-			)
-			parent := filepath.Dir(dir)
-			if parent == dir {
-				break
+func loadDefaultCatalogBytes(ctx context.Context) ([]byte, bool, error) {
+	// 1. Optional explicit local file override (e.g. air-gapped environments or tests).
+	for _, envKey := range []string{"DEFAULT_CATALOG_PATH", "CATALOG_PATH"} {
+		if p := strings.TrimSpace(os.Getenv(envKey)); p != "" {
+			raw, err := os.ReadFile(p)
+			if err == nil && len(raw) > 0 {
+				return raw, true, nil
 			}
-			dir = parent
 		}
 	}
-	candidates = append(candidates,
-		"/mentor-training/vulnerability-database/maven-vulnerabilities.json",
-		"/mentor-training/vulnerability-database/vulnerabilities.json",
-	)
-	for _, path := range candidates {
-		raw, err := os.ReadFile(path)
-		if err == nil && len(raw) > 0 {
-			return raw, true
-		}
+
+	// 2. Live internet fetch from public OSV Maven vulnerability database (or custom CATALOG_FEED_URL).
+	feedURL := strings.TrimSpace(os.Getenv("CATALOG_FEED_URL"))
+	if feedURL == "" {
+		feedURL = strings.TrimSpace(os.Getenv("OSV_MAVEN_ZIP_URL"))
 	}
-	return nil, false
+	if strings.EqualFold(feedURL, "off") || strings.EqualFold(feedURL, "disabled") {
+		return nil, false, nil
+	}
+	if feedURL == "" {
+		feedURL = gradleparser.DefaultOSVMavenZipURL
+	}
+
+	fetchCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	raw, count, err := gradleparser.FetchOSVMavenCatalog(fetchCtx, feedURL)
+	if err != nil {
+		return nil, false, err
+	}
+	slog.Info("fetched live Maven vulnerability catalog from internet", "url", feedURL, "advisories", count, "bytes", len(raw))
+	return raw, true, nil
 }
 
 func ensureLayout(ctx context.Context, base, token string) error {

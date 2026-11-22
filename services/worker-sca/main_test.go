@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	secflowv1 "github.com/secflow/secflow/packages/proto/gen/go/secflow/v1"
+	"github.com/secflow/secflow/services/internal/gradleparser"
 )
 
 const sampleCatalogJSON = `{
@@ -129,6 +130,36 @@ func TestMatchWithResolver_CatalogResolutionOrder(t *testing.T) {
 		}
 		if len(findings) != 1 || findings[0].AdvisoryId != "CVE-2022-42889" {
 			t.Fatalf("unexpected findings: %+v", findings)
+		}
+	})
+
+	t.Run("falls back to live OSV API when stored catalog is unavailable", func(t *testing.T) {
+		t.Parallel()
+		calledLive := false
+		resolver := &catalogResolver{
+			blobConfigured: func() bool { return true },
+			blobGet: func(_ context.Context, _, _ string) ([]byte, error) {
+				return nil, errors.New("garage unavailable")
+			},
+			osvAPIBaseURL: "https://api.osv.dev",
+			liveQueryOSV: func(_ context.Context, deps []gradleparser.Dependency, _ string) ([]gradleparser.Finding, error) {
+				calledLive = true
+				if len(deps) != 1 || deps[0].Artifact != "commons-text" {
+					t.Fatalf("unexpected deps passed to live OSV: %+v", deps)
+				}
+				return []gradleparser.Finding{{
+					Group: "org.apache.commons", Artifact: "commons-text", Version: "1.9",
+					Path: "build.gradle.kts", AdvisoryID: "CVE-2022-42889", Severity: "CRITICAL",
+				}}, nil
+			},
+		}
+
+		findings, err := matchWithResolver(t.Context(), projectDir, "", resolver)
+		if err != nil {
+			t.Fatalf("matchWithResolver() error = %v", err)
+		}
+		if !calledLive || len(findings) != 1 || findings[0].AdvisoryId != "CVE-2022-42889" {
+			t.Fatalf("expected live OSV fallback finding, calledLive=%v findings=%+v", calledLive, findings)
 		}
 	})
 

@@ -375,8 +375,8 @@ spec:
               value: secflow-app,secflow-workers,secflow-sandbox
             - name: GARAGE_CRED_FILE
               value: /tmp/garage.json
-            - name: DEFAULT_CATALOG_PATH
-              value: /mentor-training/vulnerability-database/vulnerabilities.json
+            - name: OSV_MAVEN_ZIP_URL
+              value: https://osv-vulnerabilities.storage.googleapis.com/Maven/all.zip
           securityContext:
             runAsNonRoot: true
             readOnlyRootFilesystem: true

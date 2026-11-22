@@ -43,7 +43,7 @@ services:
       GARAGE_ADMIN_URL: http://garage:3903
       GARAGE_ADMIN_TOKEN: dev-admin-token
       GARAGE_CRED_FILE: /var/lib/secflow/garage.json
-      DEFAULT_CATALOG_PATH: /mentor-training/vulnerability-database/vulnerabilities.json
+      OSV_MAVEN_ZIP_URL: "${OSV_MAVEN_ZIP_URL:-https://osv-vulnerabilities.storage.googleapis.com/Maven/all.zip}"
     volumes:
       - onlyscans-garage-cred:/var/lib/secflow
     depends_on:
@@ -168,11 +168,10 @@ services:
       ORCHESTRATOR_ADDR: orchestrator:50051
       GARAGE_ENDPOINT: http://garage:3900
       GARAGE_CRED_FILE: /var/lib/secflow/garage.json
-      CATALOG_PATH: /mentor-training/vulnerability-database/vulnerabilities.json
+      OSV_API_URL: "${OSV_API_URL:-https://api.osv.dev}"
       OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
     volumes:
       - onlyscans-garage-cred:/var/lib/secflow:ro
-      - ../../tests/data/repos/mentor-training/vulnerability-database:/mentor-training/vulnerability-database:ro
     depends_on:
       garage-init:
         condition: service_completed_successfully

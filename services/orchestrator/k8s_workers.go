@@ -110,6 +110,7 @@ type K8sWorkerScalerConfig struct {
 	ImageRegistry        string
 	ImageTag             string
 	ImagePullPolicy      string
+	ImagePullSecrets     []string
 	ProvisionTimeout     time.Duration
 	ScaleWaitTimeout     time.Duration
 	ReconcileInterval    time.Duration
@@ -498,6 +499,14 @@ func (k *K8sWorkerScaler) ensurePoolLocked(ctx context.Context, pool WorkerPoolS
 		return 0, fmt.Errorf("get worker deployment %s/%s: %w", ns, pool.Name, err)
 	}
 
+	if dep.Labels[workerPoolLabelManagedBy] == workerPoolManagedByOrch {
+		if synced, err := k.syncManagedDeploymentSpecLocked(ctx, pool, dep); err != nil {
+			slog.WarnContext(ctx, "sync worker deployment template", "namespace", ns, "pool", pool.Name, "err", err)
+		} else if synced != nil {
+			dep = synced
+		}
+	}
+
 	current := int32(0)
 	if dep.Spec.Replicas != nil {
 		current = *dep.Spec.Replicas
@@ -513,6 +522,44 @@ func (k *K8sWorkerScaler) ensurePoolLocked(ctx context.Context, pool WorkerPoolS
 		direction = "down"
 	}
 	return k.scaleDeploymentLocked(ctx, pool.Name, dep, desired, direction)
+}
+
+func (k *K8sWorkerScaler) syncManagedDeploymentSpecLocked(ctx context.Context, pool WorkerPoolSpec, dep *appsv1.Deployment) (*appsv1.Deployment, error) {
+	if dep == nil || len(dep.Spec.Template.Spec.Containers) == 0 {
+		return dep, nil
+	}
+	desiredDep := k.buildDeployment(pool, 0)
+	wantC := desiredDep.Spec.Template.Spec.Containers[0]
+	wantSecrets := desiredDep.Spec.Template.Spec.ImagePullSecrets
+
+	curC := dep.Spec.Template.Spec.Containers[0]
+	changed := curC.Image != wantC.Image ||
+		curC.ImagePullPolicy != wantC.ImagePullPolicy ||
+		!equalLocalObjectRefs(dep.Spec.Template.Spec.ImagePullSecrets, wantSecrets)
+	if !changed {
+		return dep, nil
+	}
+	cp := dep.DeepCopy()
+	cp.Spec.Template.Spec.Containers[0].Image = wantC.Image
+	cp.Spec.Template.Spec.Containers[0].ImagePullPolicy = wantC.ImagePullPolicy
+	cp.Spec.Template.Spec.ImagePullSecrets = wantSecrets
+	updated, err := k.kube.AppsV1().Deployments(k.cfg.Namespace).Update(ctx, cp, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+func equalLocalObjectRefs(a, b []corev1.LocalObjectReference) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Name != b[i].Name {
+			return false
+		}
+	}
+	return true
 }
 
 func (k *K8sWorkerScaler) scaleDeploymentLocked(ctx context.Context, poolName string, dep *appsv1.Deployment, desired int32, direction string) (int32, error) {
@@ -641,6 +688,13 @@ func (k *K8sWorkerScaler) buildDeployment(pool WorkerPoolSpec, replicas int32) *
 		pullPolicy = corev1.PullIfNotPresent
 	}
 
+	var imagePullSecrets []corev1.LocalObjectReference
+	for _, secretName := range k.cfg.ImagePullSecrets {
+		if trimmed := strings.TrimSpace(secretName); trimmed != "" {
+			imagePullSecrets = append(imagePullSecrets, corev1.LocalObjectReference{Name: trimmed})
+		}
+	}
+
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      pool.Name,
@@ -659,6 +713,7 @@ func (k *K8sWorkerScaler) buildDeployment(pool WorkerPoolSpec, replicas int32) *
 				Spec: corev1.PodSpec{
 					AutomountServiceAccountToken:  &automountSA,
 					TerminationGracePeriodSeconds: &graceSec,
+					ImagePullSecrets:              imagePullSecrets,
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: &runAsNonRoot,
 						RunAsUser:    &nonRootUID,
@@ -755,6 +810,7 @@ func buildWorkerScaler() (WorkerScaler, time.Duration, error) {
 			ImageRegistry:        envutil.Get("WORKER_IMAGE_REGISTRY", "ghcr.io/secflow"),
 			ImageTag:             envutil.Get("WORKER_IMAGE_TAG", "latest"),
 			ImagePullPolicy:      envutil.Get("WORKER_IMAGE_PULL_POLICY", string(corev1.PullIfNotPresent)),
+			ImagePullSecrets:     parseCSVList(os.Getenv("WORKER_IMAGE_PULL_SECRETS")),
 			ProvisionTimeout:     time.Duration(envPositiveInt("WORKER_PROVISION_TIMEOUT_SECONDS", 90)) * time.Second,
 			ScaleWaitTimeout:     time.Duration(envPositiveInt("WORKER_SCALE_WAIT_TIMEOUT_SECONDS", 15)) * time.Second,
 			ReconcileInterval:    time.Duration(envPositiveInt("WORKER_RECONCILE_INTERVAL_SECONDS", 10)) * time.Second,
@@ -786,6 +842,16 @@ func envPositiveInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func parseCSVList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 // startWorkerScaler runs the periodic worker autoscaler reconciliation loop.

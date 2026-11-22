@@ -21,6 +21,7 @@ spec:
           global:
             imageRegistry: ghcr.io/zwarder-s-orgranization/onlyscans
             imageTag: latest
+            imagePullPolicy: Always
             # Replace with your real HTTPS domain served by Angie:
             publicUrl: "https://onlyscans.zwarder.ru"
             corsAllowOrigins: "https://onlyscans.zwarder.ru,http://localhost:3000"

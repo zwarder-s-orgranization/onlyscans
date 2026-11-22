@@ -6,8 +6,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	secflowv1 "github.com/secflow/secflow/packages/proto/gen/go/secflow/v1"
+	"github.com/secflow/secflow/services/internal/blobstore"
 	"github.com/secflow/secflow/services/internal/envutil"
 	"github.com/secflow/secflow/services/internal/kotlinscan"
 	"github.com/secflow/secflow/services/internal/manifest"
@@ -26,6 +28,10 @@ func main() {
 		slog.Warn("telemetry init", "err", err)
 	} else {
 		defer obs.Shutdown(shutdownObs)
+	}
+
+	if err := blobstore.WaitReachable(ctx, 15*time.Second); err != nil && ctx.Err() == nil {
+		slog.Warn("garage reachability wait timed out", "err", err)
 	}
 
 	manifests := workerManifests()

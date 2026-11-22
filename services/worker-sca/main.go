@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -28,25 +27,37 @@ import (
 
 type scaParams struct {
 	CatalogID string `json:"catalogId"`
+	LiveOSV   bool   `json:"liveOsv"`
 }
 
 type catalogResolver struct {
 	orchestratorAddr string
 	catalogPath      string
+	osvAPIBaseURL    string
+	preferLiveOSV    bool
 	fetchCatalogMeta func(ctx context.Context, addr, catalogID string) (*secflowv1.VulnerabilityCatalog, error)
 	blobConfigured   func() bool
 	blobGet          func(ctx context.Context, bucket, key string) ([]byte, error)
+	liveQueryOSV     func(ctx context.Context, deps []gradleparser.Dependency, apiBaseURL string) ([]gradleparser.Finding, error)
 	fallbackFiles    []string
 }
 
 func defaultCatalogResolver(orchAddr, catalogPath string) *catalogResolver {
+	osvURL := strings.TrimSpace(os.Getenv("OSV_API_URL"))
+	if osvURL == "" {
+		osvURL = gradleparser.DefaultOSVAPIBaseURL
+	}
+	preferLive := strings.EqualFold(strings.TrimSpace(os.Getenv("OSV_LIVE_QUERY")), "1") ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv("OSV_LIVE_QUERY")), "true")
 	return &catalogResolver{
 		orchestratorAddr: orchAddr,
 		catalogPath:      catalogPath,
+		osvAPIBaseURL:    osvURL,
+		preferLiveOSV:    preferLive,
 		fetchCatalogMeta: fetchCatalogMetadataGRPC,
 		blobConfigured:   blobstore.Configured,
 		blobGet:          blobstore.Get,
-		fallbackFiles:    defaultFallbackCatalogFiles(),
+		liveQueryOSV:     gradleparser.QueryOSVLive,
 	}
 }
 
@@ -66,6 +77,10 @@ func main() {
 	m.RuntimeLanguage = "go"
 	m.SandboxProfile = secflowv1.SandboxProfile_SANDBOX_PROFILE_INTERNAL_ONLY
 
+	if err := blobstore.WaitReachable(ctx, 15*time.Second); err != nil && ctx.Err() == nil {
+		slog.Warn("garage reachability wait timed out", "err", err)
+	}
+
 	resolver := defaultCatalogResolver(orchAddr, envutil.Get("CATALOG_PATH", ""))
 
 	if err := workerclient.Run(ctx, orchAddr, envutil.Get("WORKER_INSTANCE_ID", "worker-sca"), []*secflowv1.PluginManifest{m}, func(taskCtx context.Context, task *secflowv1.NodeTask) *secflowv1.NodeResult {
@@ -79,8 +94,8 @@ func main() {
 			return failResult(task, "TASK_CANCELLED", err.Error())
 		}
 		params := parseSCAParams(task.GetParamsJson())
-		_ = workerclient.ReportProgress(taskCtx, 40, "parsing gradle dependencies and matching catalog")
-		findings, err := matchWithResolver(taskCtx, root, params.CatalogID, resolver)
+		_ = workerclient.ReportProgress(taskCtx, 40, "parsing dependencies and matching vulnerability catalog")
+		findings, err := matchWithParams(taskCtx, root, params, resolver)
 		if err != nil {
 			slog.Error("sca scan failed", "run_id", task.GetRunId(), "node_id", task.GetNodeId(), "err", err)
 			return failResult(task, "SCA_SCAN_FAILED", err.Error())
@@ -127,6 +142,10 @@ func failResult(task *secflowv1.NodeTask, code, msg string) *secflowv1.NodeResul
 }
 
 func matchWithResolver(ctx context.Context, root, catalogID string, resolver *catalogResolver) ([]*secflowv1.Finding, error) {
+	return matchWithParams(ctx, root, scaParams{CatalogID: catalogID}, resolver)
+}
+
+func matchWithParams(ctx context.Context, root string, params scaParams, resolver *catalogResolver) ([]*secflowv1.Finding, error) {
 	if root == "" {
 		return nil, fmt.Errorf("source root is empty")
 	}
@@ -135,13 +154,39 @@ func matchWithResolver(ctx context.Context, root, catalogID string, resolver *ca
 	}
 	deps, err := gradleparser.ParseProject(root)
 	if err != nil {
-		return nil, fmt.Errorf("parse gradle project: %w", err)
+		return nil, fmt.Errorf("parse project dependencies: %w", err)
 	}
-	advisories, err := resolver.load(ctx, catalogID)
+
+	var matched []gradleparser.Finding
+	useLive := (params.LiveOSV || resolver.preferLiveOSV) && params.CatalogID == ""
+	if useLive && resolver.liveQueryOSV != nil && !strings.EqualFold(resolver.osvAPIBaseURL, "off") {
+		liveFindings, lerr := resolver.liveQueryOSV(ctx, deps, resolver.osvAPIBaseURL)
+		if lerr == nil {
+			return toProtoSCAFindings(liveFindings), nil
+		}
+		slog.Warn("live OSV query failed, falling back to stored catalog", "err", lerr)
+	}
+
+	advisories, err := resolver.load(ctx, params.CatalogID)
 	if err != nil {
+		// When no explicit custom catalogId was requested, fall back to live OSV.dev API.
+		if (params.CatalogID == "" || params.CatalogID == "default") &&
+			resolver.liveQueryOSV != nil &&
+			!strings.EqualFold(resolver.osvAPIBaseURL, "off") {
+			slog.Warn("stored vulnerability catalog unavailable, querying live OSV API", "err", err)
+			liveFindings, lerr := resolver.liveQueryOSV(ctx, deps, resolver.osvAPIBaseURL)
+			if lerr == nil {
+				return toProtoSCAFindings(liveFindings), nil
+			}
+			return nil, fmt.Errorf("%w; live OSV fallback failed: %w", err, lerr)
+		}
 		return nil, err
 	}
-	matched := gradleparser.Match(deps, advisories)
+	matched = gradleparser.Match(deps, advisories)
+	return toProtoSCAFindings(matched), nil
+}
+
+func toProtoSCAFindings(matched []gradleparser.Finding) []*secflowv1.Finding {
 	out := make([]*secflowv1.Finding, 0, len(matched))
 	for _, f := range matched {
 		// Per submission-report.schema.json, SCA findings MUST NOT set line, endLine, or class.
@@ -156,7 +201,7 @@ func matchWithResolver(ctx context.Context, root, catalogID string, resolver *ca
 			PluginId:   "scan.sca",
 		})
 	}
-	return out, nil
+	return out
 }
 
 func (r *catalogResolver) load(ctx context.Context, catalogID string) ([]gradleparser.Advisory, error) {
@@ -188,7 +233,7 @@ func (r *catalogResolver) load(ctx context.Context, catalogID string) ([]gradlep
 		}
 	}
 
-	// 2. Default catalog directly from Garage secflow-catalogs/default.json when configured.
+	// 2. Default catalog directly from Garage secflow-catalogs/default.json (seeded from live OSV by garage-init).
 	if r.blobConfigured != nil && r.blobConfigured() && r.blobGet != nil {
 		raw, err := r.blobGet(ctx, "secflow-catalogs", "default.json")
 		if err == nil && len(raw) > 0 {
@@ -199,11 +244,11 @@ func (r *catalogResolver) load(ctx context.Context, catalogID string) ([]gradlep
 			return advisories, nil
 		}
 		if err != nil {
-			slog.Warn("fetch default catalog from garage failed, trying local fallback", "err", err)
+			slog.Warn("fetch default catalog from garage failed", "err", err)
 		}
 	}
 
-	// 3. Local fallback: CATALOG_PATH env or mentor-training vulnerability database if readable.
+	// 3. Explicit local file override (CATALOG_PATH env or custom fallbackFiles).
 	if r.catalogPath != "" {
 		advisories, err := gradleparser.LoadCatalog(r.catalogPath)
 		if err == nil {
@@ -220,7 +265,7 @@ func (r *catalogResolver) load(ctx context.Context, catalogID string) ([]gradlep
 		}
 	}
 
-	// 4. Fail task if no catalog can be loaded.
+	// 4. No stored catalog found (caller may fall back to live OSV API).
 	return nil, fmt.Errorf("no vulnerability catalog could be loaded (catalogId=%q)", id)
 }
 
@@ -255,28 +300,4 @@ func fetchCatalogMetadataGRPC(ctx context.Context, addr, catalogID string) (*sec
 		}
 	}
 	return nil, fmt.Errorf("default catalog not registered in CatalogService")
-}
-
-func defaultFallbackCatalogFiles() []string {
-	var candidates []string
-	if dir, err := os.Getwd(); err == nil {
-		for {
-			candidates = append(candidates,
-				filepath.Join(dir, "tests", "data", "repos", "mentor-training", "vulnerability-database", "maven-vulnerabilities.json"),
-				filepath.Join(dir, "tests", "data", "repos", "mentor-training", "vulnerability-database", "vulnerabilities.json"),
-				filepath.Join(dir, "mentor-training", "vulnerability-database", "maven-vulnerabilities.json"),
-				filepath.Join(dir, "mentor-training", "vulnerability-database", "vulnerabilities.json"),
-			)
-			parent := filepath.Dir(dir)
-			if parent == dir {
-				break
-			}
-			dir = parent
-		}
-	}
-	candidates = append(candidates,
-		"/mentor-training/vulnerability-database/maven-vulnerabilities.json",
-		"/mentor-training/vulnerability-database/vulnerabilities.json",
-	)
-	return candidates
 }
