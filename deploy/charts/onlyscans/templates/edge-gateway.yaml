@@ -1,0 +1,175 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: edge-gateway
+  namespace: {{ .Values.namespaces.app }}
+  labels:
+    app: edge-gateway
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+spec:
+  type: {{ .Values.edgeGateway.service.type | default "ClusterIP" }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      {{- if and (eq (.Values.edgeGateway.service.type | default "ClusterIP") "NodePort") .Values.edgeGateway.service.nodePort }}
+      nodePort: {{ .Values.edgeGateway.service.nodePort }}
+      {{- end }}
+  selector:
+    app: edge-gateway
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edge-gateway
+  namespace: {{ .Values.namespaces.app }}
+  labels:
+    app: edge-gateway
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.edgeGateway.replicas }}
+  selector:
+    matchLabels:
+      app: edge-gateway
+  template:
+    metadata:
+      labels:
+        app: edge-gateway
+        {{- include "secflow.commonLabels" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "secflow.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: edge-gateway
+          image: {{ include "secflow.image" (dict "root" . "repo" .Values.edgeGateway.imageRepository) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SECFLOW_ENV
+              value: {{ .Values.global.env | quote }}
+            - name: HTTP_ADDR
+              value: ":8080"
+            - name: AUTH_MODE
+              value: {{ .Values.auth.mode | quote }}
+            {{- if eq .Values.auth.mode "oidc" }}
+            - name: OIDC_ISSUER_URL
+              value: {{ .Values.auth.oidc.issuerUrl | quote }}
+            - name: OIDC_JWKS_URL
+              value: {{ .Values.auth.oidc.jwksUrl | quote }}
+            - name: OIDC_AUDIENCE
+              value: {{ .Values.auth.oidc.audience | quote }}
+            {{- end }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-db
+                  key: DATABASE_URL
+            - name: REDIS_ADDR
+              value: {{ include "secflow.redisAddr" . | quote }}
+            - name: ORCHESTRATOR_ADDR
+              value: {{ include "secflow.orchestratorAddr" . | quote }}
+            - name: INGESTER_ADDR
+              value: {{ include "secflow.ingesterAddr" . | quote }}
+            - name: AI_ADDR
+              value: {{ include "secflow.aiAddr" . | quote }}
+            - name: NOTIFY_ADDR
+              value: {{ include "secflow.notifyAddr" . | quote }}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-auth
+                  key: JWT_SECRET
+            - name: SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-auth
+                  key: SERVICE_TOKEN
+            - name: RATE_LIMIT_PER_MINUTE
+              value: {{ .Values.edgeGateway.rateLimitPerMinute | quote }}
+            - name: CORS_ALLOW_ORIGINS
+              value: {{ .Values.global.corsAllowOrigins | quote }}
+            - name: GARAGE_ENDPOINT
+              value: {{ include "secflow.garageEndpoint" . | quote }}
+            - name: GARAGE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.garage.secretName }}
+                  key: GARAGE_ACCESS_KEY
+                  optional: true
+            - name: GARAGE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.garage.secretName }}
+                  key: GARAGE_SECRET_KEY
+                  optional: true
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ include "secflow.otelEndpoint" . | quote }}
+          securityContext:
+            {{- include "secflow.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.edgeGateway.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+{{- if .Values.edgeGateway.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: edge-gateway
+  namespace: {{ .Values.namespaces.app }}
+spec:
+  minAvailable: {{ .Values.edgeGateway.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      app: edge-gateway
+{{- end }}
+{{- if .Values.edgeGateway.hpa.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: edge-gateway
+  namespace: {{ .Values.namespaces.app }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: edge-gateway
+  minReplicas: {{ .Values.edgeGateway.hpa.minReplicas }}
+  maxReplicas: {{ .Values.edgeGateway.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.edgeGateway.hpa.targetCPUUtilizationPercentage }}
+{{- end }}

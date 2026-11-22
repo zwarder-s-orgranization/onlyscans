@@ -660,3 +660,171 @@ func TestPolicyGatePassWarnFail(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateWithPluginsDynamicMetadata(t *testing.T) {
+	t.Parallel()
+
+	registry := map[string]PluginMeta{
+		"trigger.manual": {
+			PluginID:    "trigger.manual",
+			Category:    "TRIGGER",
+			OutputPorts: []string{"default"},
+			Enabled:     true,
+			Registered:  true,
+		},
+		"source.upload": {
+			PluginID:    "source.upload",
+			Category:    "SOURCE",
+			OutputPorts: []string{"default"},
+			Enabled:     true,
+			Registered:  true,
+		},
+		"custom.iac-checker": {
+			PluginID:    "custom.iac-checker",
+			Category:    "ANALYZER",
+			OutputPorts: []string{"default"},
+			Enabled:     true,
+			Registered:  true,
+		},
+		"logic.risk-router": {
+			PluginID:    "logic.risk-router",
+			Category:    "LOGIC",
+			OutputPorts: []string{"BLOCK", "REVIEW", "OK"},
+			Enabled:     true,
+			Registered:  true,
+		},
+		"action.mattermost": {
+			PluginID:           "action.mattermost",
+			Category:           "ACTION",
+			OutputPorts:        []string{"default"},
+			RequiredSecretKeys: []string{"webhookToken"},
+			Enabled:            true,
+			Registered:         true,
+		},
+		"custom.disabled-analyzer": {
+			PluginID:    "custom.disabled-analyzer",
+			Category:    "ANALYZER",
+			OutputPorts: []string{"default"},
+			Enabled:     false,
+			Registered:  true,
+		},
+	}
+	lookup := func(pluginID string) (PluginMeta, bool) {
+		m, ok := registry[pluginID]
+		return m, ok
+	}
+
+	tests := []struct {
+		name      string
+		graph     Graph
+		wantCodes []string
+	}{
+		{
+			name: "valid graph with custom analyzer, custom logic ports, and bound action secret",
+			graph: Graph{
+				Nodes: []Node{
+					{ID: "t", PluginID: "trigger.manual"},
+					{ID: "s", PluginID: "source.upload"},
+					{ID: "a", PluginID: "custom.iac-checker"},
+					{ID: "r", PluginID: "logic.risk-router"},
+					{ID: "act", PluginID: "action.mattermost", Secrets: map[string]string{"webhookToken": "sec_mm_1"}},
+				},
+				Edges: []Edge{
+					{ID: "e1", Source: "t", SourceHandle: "default", Target: "s", TargetHandle: "default"},
+					{ID: "e2", Source: "s", SourceHandle: "default", Target: "a", TargetHandle: "default"},
+					{ID: "e3", Source: "a", SourceHandle: "default", Target: "r", TargetHandle: "default"},
+					{ID: "e4", Source: "r", SourceHandle: "BLOCK", Target: "act", TargetHandle: "default"},
+				},
+			},
+			wantCodes: nil,
+		},
+		{
+			name: "custom analyzer without scan prefix requires upstream source node",
+			graph: Graph{
+				Nodes: []Node{
+					{ID: "t", PluginID: "trigger.manual"},
+					{ID: "a", PluginID: "custom.iac-checker"},
+				},
+				Edges: []Edge{
+					{ID: "e1", Source: "t", SourceHandle: "default", Target: "a", TargetHandle: "default"},
+				},
+			},
+			wantCodes: []string{CodeMissingSource},
+		},
+		{
+			name: "custom logic node rejects undeclared output port",
+			graph: Graph{
+				Nodes: []Node{
+					{ID: "t", PluginID: "trigger.manual"},
+					{ID: "r", PluginID: "logic.risk-router"},
+					{ID: "act", PluginID: "action.mattermost", Secrets: map[string]string{"webhookToken": "sec_mm_1"}},
+				},
+				Edges: []Edge{
+					{ID: "e1", Source: "t", SourceHandle: "default", Target: "r", TargetHandle: "default"},
+					{ID: "e2", Source: "r", SourceHandle: "UNKNOWN_PORT", Target: "act", TargetHandle: "default"},
+				},
+			},
+			wantCodes: []string{CodeBadPort},
+		},
+		{
+			name: "external action node enforces manifest required_secret_keys",
+			graph: Graph{
+				Nodes: []Node{
+					{ID: "t", PluginID: "trigger.manual"},
+					{ID: "act", PluginID: "action.mattermost"},
+				},
+				Edges: []Edge{
+					{ID: "e1", Source: "t", SourceHandle: "default", Target: "act", TargetHandle: "default"},
+				},
+			},
+			wantCodes: []string{CodeMissingSecret},
+		},
+		{
+			name: "disabled plugin yields PLUGIN_DISABLED without mutating graph",
+			graph: Graph{
+				Nodes: []Node{
+					{ID: "t", PluginID: "trigger.manual"},
+					{ID: "s", PluginID: "source.upload"},
+					{ID: "d", PluginID: "custom.disabled-analyzer"},
+				},
+				Edges: []Edge{
+					{ID: "e1", Source: "t", SourceHandle: "default", Target: "s", TargetHandle: "default"},
+					{ID: "e2", Source: "s", SourceHandle: "default", Target: "d", TargetHandle: "default"},
+				},
+			},
+			wantCodes: []string{CodePluginDisabled},
+		},
+		{
+			name: "unregistered plugin yields PLUGIN_UNREGISTERED without mutating graph",
+			graph: Graph{
+				Nodes: []Node{
+					{ID: "t", PluginID: "trigger.manual"},
+					{ID: "u", PluginID: "custom.removed"},
+				},
+				Edges: []Edge{
+					{ID: "e1", Source: "t", SourceHandle: "default", Target: "u", TargetHandle: "default"},
+				},
+			},
+			wantCodes: []string{CodePluginUnregistered},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issues := ValidateWithPlugins(tt.graph, lookup)
+			got := map[string]bool{}
+			for _, iss := range issues {
+				got[iss.Code] = true
+			}
+			if len(tt.wantCodes) == 0 && len(issues) != 0 {
+				t.Fatalf("ValidateWithPlugins() = %+v, want no issues", issues)
+			}
+			for _, want := range tt.wantCodes {
+				if !got[want] {
+					t.Fatalf("ValidateWithPlugins() missing code %q; got %+v", want, issues)
+				}
+			}
+		})
+	}
+}

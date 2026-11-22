@@ -15,12 +15,28 @@ import (
 )
 
 const (
-	CodeCycle         = "DAG_CYCLE"
-	CodeMissingSource = "MISSING_SOURCE_NODE"
-	CodeBadPort       = "INVALID_PORT_HANDLE"
-	CodeMissingSecret = "MISSING_SECRET_BINDING"
-	CodeTriggerCount  = "TRIGGER_COUNT"
+	CodeCycle              = "DAG_CYCLE"
+	CodeMissingSource      = "MISSING_SOURCE_NODE"
+	CodeBadPort            = "INVALID_PORT_HANDLE"
+	CodeMissingSecret      = "MISSING_SECRET_BINDING"
+	CodeTriggerCount       = "TRIGGER_COUNT"
+	CodePluginDisabled     = "PLUGIN_DISABLED"
+	CodePluginUnregistered = "PLUGIN_UNREGISTERED"
 )
+
+// PluginMeta carries registry-supplied metadata used to validate Workflow graphs
+// without hardcoding built-in plugin_ids.
+type PluginMeta struct {
+	PluginID           string
+	Category           string // "TRIGGER" | "SOURCE" | "ANALYZER" | "LOGIC" | "AI_REPORT" | "ACTION"
+	OutputPorts        []string
+	RequiredSecretKeys []string
+	Enabled            bool
+	Registered         bool
+}
+
+// PluginLookup resolves metadata for a plugin_id from the active plugin registry.
+type PluginLookup func(pluginID string) (PluginMeta, bool)
 
 // Issue is one pre-run validation problem.
 type Issue struct {
@@ -358,6 +374,8 @@ type Result struct {
 	Envelope        Envelope
 	PortEnvelopes   map[string]Envelope
 	ActivePorts     []string
+	ArtifactKey     string
+	ArtifactContent []byte
 	Status          string
 	Err             string
 	RedactedPreview []byte
@@ -366,14 +384,45 @@ type Result struct {
 // Handler executes one plugin. Logic plugins may be nil and use the built-ins.
 type Handler func(node Node, in Envelope) Result
 
-// Validate checks trigger cardinality, cycles, source-before-analyzer, and ports.
+// Validate checks trigger cardinality, cycles, source-before-analyzer, and ports
+// using built-in plugin heuristics. Prefer ValidateWithPlugins when a live plugin
+// registry is available.
 func Validate(g Graph) []Issue {
+	return ValidateWithPlugins(g, nil)
+}
+
+// ValidateWithPlugins validates a Workflow DAG using metadata resolved from lookup
+// (dynamic category, output ports, required secret keys, and enabled/registered status).
+func ValidateWithPlugins(g Graph, lookup PluginLookup) []Issue {
 	var issues []Issue
 	triggers := 0
 	nodes := map[string]Node{}
+	metaByNode := map[string]PluginMeta{}
+
 	for _, n := range g.Nodes {
 		nodes[n.ID] = n
-		if strings.HasPrefix(n.PluginID, "trigger.") {
+		if lookup != nil {
+			meta, ok := lookup(n.PluginID)
+			if !ok || !meta.Registered {
+				issues = append(issues, Issue{
+					Code:     CodePluginUnregistered,
+					Severity: "ERROR",
+					NodeID:   n.ID,
+					Message:  fmt.Sprintf("плагин %q не зарегистрирован в реестре", n.PluginID),
+				})
+			} else {
+				metaByNode[n.ID] = meta
+				if !meta.Enabled {
+					issues = append(issues, Issue{
+						Code:     CodePluginDisabled,
+						Severity: "ERROR",
+						NodeID:   n.ID,
+						Message:  fmt.Sprintf("плагин %q отключён", n.PluginID),
+					})
+				}
+			}
+		}
+		if isTriggerNode(n, metaByNode[n.ID]) {
 			triggers++
 		}
 	}
@@ -384,10 +433,10 @@ func Validate(g Graph) []Issue {
 		issues = append(issues, Issue{Code: CodeCycle, Severity: "ERROR", Message: "в графе есть цикл"})
 	}
 	for _, n := range g.Nodes {
-		if !isAnalyzer(n.PluginID) {
+		if !isAnalyzerNode(n, metaByNode[n.ID]) {
 			continue
 		}
-		if !sourceOnPath(g, n.ID) {
+		if !sourceOnPathWithMeta(g, n.ID, metaByNode) {
 			issues = append(issues, Issue{
 				Code: CodeMissingSource, Severity: "ERROR", NodeID: n.ID,
 				Message: "перед анализатором нет source-ноды",
@@ -399,7 +448,7 @@ func Validate(g Graph) []Issue {
 		if !ok {
 			continue
 		}
-		if !portAllowed(src, e.SourceHandle) {
+		if !portAllowedWithMeta(src, e.SourceHandle, metaByNode[src.ID]) {
 			issues = append(issues, Issue{
 				Code: CodeBadPort, Severity: "ERROR", EdgeID: e.ID, NodeID: src.ID,
 				Message: "sourceHandle " + e.SourceHandle + " не существует у " + src.PluginID,
@@ -407,7 +456,7 @@ func Validate(g Graph) []Issue {
 		}
 	}
 	for _, n := range g.Nodes {
-		for _, key := range requiredSecrets(n.PluginID) {
+		for _, key := range requiredSecretsWithMeta(n, metaByNode[n.ID]) {
 			if hasNodeSecret(n, key) {
 				continue
 			}
@@ -418,6 +467,56 @@ func Validate(g Graph) []Issue {
 		}
 	}
 	return issues
+}
+
+func isTriggerNode(n Node, meta PluginMeta) bool {
+	if meta.Registered && meta.Category != "" {
+		return strings.EqualFold(meta.Category, "TRIGGER")
+	}
+	return strings.HasPrefix(n.PluginID, "trigger.")
+}
+
+func isAnalyzerNode(n Node, meta PluginMeta) bool {
+	if meta.Registered && meta.Category != "" {
+		return strings.EqualFold(meta.Category, "ANALYZER")
+	}
+	return isAnalyzer(n.PluginID)
+}
+
+func isSourceNode(pluginID string, meta PluginMeta) bool {
+	if meta.Registered && meta.Category != "" {
+		return strings.EqualFold(meta.Category, "SOURCE")
+	}
+	return strings.HasPrefix(pluginID, "source.")
+}
+
+func requiredSecretsWithMeta(n Node, meta PluginMeta) []string {
+	if meta.Registered {
+		return meta.RequiredSecretKeys
+	}
+	return requiredSecrets(n.PluginID)
+}
+
+func portAllowedWithMeta(n Node, handle string, meta PluginMeta) bool {
+	if handle == "" {
+		handle = "default"
+	}
+	for _, p := range outputPortsWithMeta(n, meta) {
+		if p == handle {
+			return true
+		}
+	}
+	return false
+}
+
+func outputPortsWithMeta(n Node, meta PluginMeta) []string {
+	if n.PluginID == "logic.switch" {
+		return outputPorts(n)
+	}
+	if meta.Registered && len(meta.OutputPorts) > 0 {
+		return meta.OutputPorts
+	}
+	return outputPorts(n)
 }
 
 // Step runs a single node. The queue uses it so any replica can execute one claimed task.
@@ -513,7 +612,7 @@ func cycle(g Graph) bool {
 	return seen != len(g.Nodes)
 }
 
-func sourceOnPath(g Graph, nodeID string) bool {
+func sourceOnPathWithMeta(g Graph, nodeID string, metaByNode map[string]PluginMeta) bool {
 	incoming := map[string][]string{}
 	kind := map[string]string{}
 	for _, n := range g.Nodes {
@@ -529,7 +628,7 @@ func sourceOnPath(g Graph, nodeID string) bool {
 			return false
 		}
 		seen[id] = true
-		if strings.HasPrefix(kind[id], "source.") {
+		if isSourceNode(kind[id], metaByNode[id]) {
 			return true
 		}
 		for _, prev := range incoming[id] {
@@ -548,6 +647,8 @@ type NodeTrace struct {
 	Output          Envelope            `json:"output"`
 	Ports           []string            `json:"ports"`
 	PortOutputs     map[string]Envelope `json:"portOutputs,omitempty"`
+	ArtifactKey     string              `json:"artifactKey,omitempty"`
+	ArtifactContent []byte              `json:"-"`
 	RedactedPreview []byte              `json:"redactedPreview,omitempty"`
 }
 
@@ -600,6 +701,8 @@ func Run(g Graph, handlers map[string]Handler, seed Envelope) (authoritative []F
 			Output:          result.Envelope,
 			Ports:           ports,
 			PortOutputs:     clonePortEnvelopes(result.PortEnvelopes),
+			ArtifactKey:     result.ArtifactKey,
+			ArtifactContent: slices.Clone(result.ArtifactContent),
 			RedactedPreview: slices.Clone(result.RedactedPreview),
 		}
 		if isAnalyzer(n.PluginID) {
@@ -1690,6 +1793,8 @@ func Rerun(g Graph, nodeID string, cached Envelope, handlers map[string]Handler)
 			Output:          result.Envelope,
 			Ports:           ports,
 			PortOutputs:     clonePortEnvelopes(result.PortEnvelopes),
+			ArtifactKey:     result.ArtifactKey,
+			ArtifactContent: slices.Clone(result.ArtifactContent),
 			RedactedPreview: slices.Clone(result.RedactedPreview),
 		}
 		chosen := map[string]bool{}

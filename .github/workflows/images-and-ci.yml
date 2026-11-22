@@ -1,0 +1,128 @@
+name: CI & Container Images (GHCR)
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      public_api_url:
+        description: "NEXT_PUBLIC_API_URL baked into the web image (defaults to repository variable PUBLIC_API_URL)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  go-ci:
+    name: Go Vet, Tests & Supply-Chain Hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: services/go.mod
+          cache-dependency-path: services/go.sum
+
+      - name: Enforce SecFlow scanner deny-list
+        run: |
+          if grep -rnE "aquasecurity/trivy|gitleaks/gitleaks|zricethezav/gitleaks" services/go.mod; then
+            echo "Forbidden scanner dependency detected in go.mod" >&2
+            exit 1
+          fi
+
+      - name: Run go vet and tests with race detector
+        working-directory: services
+        run: |
+          go vet ./...
+          go test -race ./...
+
+  web-ci:
+    name: Web Next.js Build Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 24 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: services/web/package-lock.json
+
+      - name: Install and build web
+        working-directory: services/web
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8080
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: |
+          npm ci
+          npm run build
+
+  build-and-push-images:
+    name: Build & Push ${{ matrix.service }}
+    needs: [go-ci, web-ci]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - orchestrator
+          - source-ingester
+          - edge-gateway
+          - web
+          - plugin-provisioner
+          - plugin-runtime-internal
+          - plugin-runtime-action
+          - garage-init
+          - worker-kotlin
+          - worker-sca
+          - sbom-service
+          - ai-service
+          - notify-service
+          - mcp-bridge
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/onlyscans/${{ matrix.service }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/${{ matrix.service }}/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ inputs.public_api_url || vars.PUBLIC_API_URL || 'http://onlyscans.local' }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max

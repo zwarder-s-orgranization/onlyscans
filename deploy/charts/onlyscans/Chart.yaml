@@ -1,0 +1,14 @@
+apiVersion: v2
+name: onlyscans
+description: OnlyScans — AI Security Workflow Platform for Kubernetes (k8s / k3s) with dynamic Kubernetes API worker scaling
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+kubeVersion: ">=1.28.0-0"
+keywords:
+  - onlyscans
+  - secflow
+  - appsec
+  - workflow
+  - kubernetes
+  - k3s

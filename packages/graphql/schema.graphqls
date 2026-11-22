@@ -84,6 +84,31 @@ enum PluginRegistryEventType {
   OFFLINE
 }
 
+enum PluginInstallationStatus {
+  DRAFT
+  PROVISIONING
+  PENDING_APPROVAL
+  ACTIVE
+  DISABLED
+  ERROR
+  DELETING
+}
+
+enum PluginSourceMode {
+  PRESET
+  OCI_IMAGE
+  EXTERNAL_PULL
+  DECLARATIVE
+}
+
+enum PluginInstallationEventType {
+  CREATED
+  UPDATED
+  APPROVED
+  STATUS_CHANGED
+  DELETED
+}
+
 enum RunStatus {
   QUEUED
   RUNNING
@@ -455,11 +480,140 @@ type Plugin {
   queueDepth: BigInt!
   registeredAt: Time!
   lastSeenAt: Time!
+  installationId: ID
+  enabled: Boolean!
+  approvalPending: Boolean!
 }
 
 type PluginRegistryEvent {
   eventType: PluginRegistryEventType!
   plugin: Plugin!
+  occurredAt: Time!
+}
+
+type PluginManifest {
+  pluginId: ID!
+  version: String!
+  displayName: String!
+  description: String!
+  category: PluginCategory!
+  capabilities: [String!]!
+  paramsJsonSchema: JSON!
+  inputPorts: [PortDefinition!]!
+  outputPorts: [PortDefinition!]!
+  runtimeLanguage: String!
+  sandboxProfile: SandboxProfile!
+  isExternal: Boolean!
+  requiredSecretKeys: [String!]!
+  maxConcurrency: Int!
+}
+
+type PluginResourceLimits {
+  cpuRequest: String!
+  cpuLimit: String!
+  memoryRequest: String!
+  memoryLimit: String!
+  minReplicas: Int!
+  maxReplicas: Int!
+}
+
+type PluginRuntimeDiagnostics {
+  phase: String!
+  desiredReplicas: Int!
+  readyReplicas: Int!
+  message: String!
+  lastError: String!
+  updatedAt: Time
+}
+
+type PluginInstallation {
+  id: ID!
+  name: String!
+  sourceMode: PluginSourceMode!
+  presetId: String
+  imageRef: String!
+  sandboxProfile: SandboxProfile!
+  egressAllowlist: [String!]!
+  resourceLimits: PluginResourceLimits!
+  desiredReplicas: Int!
+  status: PluginInstallationStatus!
+  statusReason: String
+  autoApprove: Boolean!
+  approvedManifestDigest: String
+  manifests: [PluginManifest!]!
+  pendingManifests: [PluginManifest!]!
+  pluginIds: [String!]!
+  runtimeDiagnostics: PluginRuntimeDiagnostics!
+  createdBy: String!
+  approvedBy: String
+  createdAt: Time!
+  updatedAt: Time!
+  approvedAt: Time
+  declarativeSpec: JSON
+  pendingDeclarativeSpec: JSON
+  pluginVersion: String!
+}
+
+type DeclarativePluginBlueprint {
+  id: ID!
+  name: String!
+  description: String!
+  spec: JSON!
+}
+
+type TestDeclarativePluginResult {
+  ok: Boolean!
+  validationErrors: [String!]!
+  findings: [Finding!]!
+  activeOutputPorts: [String!]!
+  envelopePatch: JSON
+  dryRunHttp: JSON
+  durationMs: Int!
+  summary: String!
+}
+
+type SavedNode {
+  id: ID!
+  name: String!
+  description: String!
+  pluginId: String!
+  params: JSON!
+  canonicalParamsHash: String!
+  createdBy: String!
+  createdAt: Time!
+  updatedAt: Time!
+}
+
+type PluginPreset {
+  id: ID!
+  name: String!
+  description: String!
+  imageRef: String!
+  category: PluginCategory!
+  sandboxProfile: SandboxProfile!
+  pluginIds: [String!]!
+  outputPorts: [PortDefinition!]!
+  requiredSecretKeys: [String!]!
+  defaultEgressAllowlist: [String!]!
+  defaultResourceLimits: PluginResourceLimits!
+  autoApproveSupported: Boolean!
+}
+
+type InstallPluginPayload {
+  installation: PluginInstallation!
+  """Plaintext plugin token returned ONCE for EXTERNAL_PULL mode. Store securely."""
+  plaintextPluginToken: String
+}
+
+type UpdatePluginInstallationPayload {
+  installation: PluginInstallation!
+  """Plaintext plugin token returned ONCE when rotating token in EXTERNAL_PULL mode."""
+  plaintextPluginToken: String
+}
+
+type PluginInstallationEvent {
+  eventType: PluginInstallationEventType!
+  installation: PluginInstallation!
   occurredAt: Time!
 }
 
@@ -894,6 +1048,79 @@ input UpdateMCPConnectionInput {
   enabled: Boolean!
 }
 
+input PluginResourceLimitsInput {
+  cpuRequest: String
+  cpuLimit: String
+  memoryRequest: String
+  memoryLimit: String
+  minReplicas: Int
+  maxReplicas: Int
+}
+
+input InstallPluginInput {
+  name: String!
+  sourceMode: PluginSourceMode!
+  presetId: String
+  imageRef: String
+  sandboxProfile: SandboxProfile
+  egressAllowlist: [String!]
+  resourceLimits: PluginResourceLimitsInput
+  desiredReplicas: Int
+  autoApprove: Boolean = false
+  declarativeSpec: JSON
+  saveAsDraft: Boolean = false
+}
+
+input ApprovePluginInstallationInput {
+  installationId: ID!
+  expectedManifestDigest: String
+}
+
+input UpdatePluginInstallationInput {
+  installationId: ID!
+  imageRef: String
+  sandboxProfile: SandboxProfile
+  egressAllowlist: [String!]
+  resourceLimits: PluginResourceLimitsInput
+  desiredReplicas: Int
+  rotateToken: Boolean = false
+  declarativeSpec: JSON
+  submitForApproval: Boolean = false
+  approveImmediately: Boolean = false
+}
+
+input VirtualFileInput {
+  path: String!
+  content: String!
+}
+
+input TestDeclarativePluginInput {
+  declarativeSpec: JSON!
+  params: JSON
+  files: [VirtualFileInput!]
+  envelope: JSON
+}
+
+input SaveNodeInput {
+  name: String!
+  description: String
+  pluginId: String!
+  params: JSON!
+}
+
+input UpdateSavedNodeInput {
+  id: ID!
+  name: String
+  description: String
+  params: JSON
+}
+
+input SetPluginInstallationEnabledInput {
+  installationId: ID!
+  enabled: Boolean!
+  reason: String
+}
+
 # ------------------------------------------------------------------------------
 # Root Operations
 # ------------------------------------------------------------------------------
@@ -923,8 +1150,13 @@ type Query {
   readableReport(runId: ID!, format: ReportFormat = MARKDOWN): ReadableReport
 
   # Plugins (Built-in + Live External Sandbox Plugins)
-  plugins(category: PluginCategory, includeOffline: Boolean = false): [Plugin!]!
+  plugins(category: PluginCategory, includeOffline: Boolean = false, includeDisabled: Boolean = false): [Plugin!]!
   plugin(pluginId: ID!): Plugin
+  pluginInstallations: [PluginInstallation!]!
+  pluginInstallation(id: ID!): PluginInstallation
+  pluginPresets: [PluginPreset!]!
+  declarativePluginBlueprints: [DeclarativePluginBlueprint!]!
+  savedNodes: [SavedNode!]!
 
   # ★1 Template Library
   templates(search: String, tags: [String!], limit: Int = 25, cursor: String): WorkflowTemplateConnection!
@@ -983,6 +1215,17 @@ type Mutation {
   updateMcpConnection(input: UpdateMCPConnectionInput!): MCPConnection!
   deleteMcpConnection(id: ID!): Boolean!
   testMcpConnection(id: ID!): MCPConnectionTestResult!
+
+  # Managed Sandbox Plugin Installations (OWNER only — ADR-0010)
+  installPlugin(input: InstallPluginInput!): InstallPluginPayload!
+  approvePluginInstallation(input: ApprovePluginInstallationInput!): PluginInstallation!
+  updatePluginInstallation(input: UpdatePluginInstallationInput!): UpdatePluginInstallationPayload!
+  setPluginInstallationEnabled(input: SetPluginInstallationEnabledInput!): PluginInstallation!
+  deletePluginInstallation(id: ID!, reason: String): Boolean!
+  testDeclarativePlugin(input: TestDeclarativePluginInput!): TestDeclarativePluginResult!
+  saveNode(input: SaveNodeInput!): SavedNode!
+  updateSavedNode(input: UpdateSavedNodeInput!): SavedNode!
+  deleteSavedNode(id: ID!): Boolean!
 }
 
 type Subscription {
@@ -997,6 +1240,11 @@ type Subscription {
   Allows UI node palette to refresh instantly without reloading or restarting core services.
   """
   pluginRegistryEvents: PluginRegistryEvent!
+
+  """
+  Live provisioning, approval, enable/disable, and pod diagnostic updates for Plugin Installations.
+  """
+  pluginInstallationEvents(installationId: ID): PluginInstallationEvent!
 
   """Live stream for the built-in local Webhook Inspector (dev/demo)."""
   webhookInspectorEvents(channelKey: String!): WebhookInspectorDelivery!

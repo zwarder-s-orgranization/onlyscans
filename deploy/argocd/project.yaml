@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: onlyscans
+  namespace: argocd
+spec:
+  description: OnlyScans AI Security Workflow Platform (App, Workers, Sandbox, System, Observability)
+  sourceRepos:
+    - "https://github.com/zwarder-s-orgranization/hz_chto_viydet.git"
+    - "ghcr.io/zwarder-s-orgranization/charts"
+    - "ghcr.io/zwarder-s-orgranization/charts/*"
+  destinations:
+    - namespace: secflow-app
+      server: https://kubernetes.default.svc
+    - namespace: secflow-workers
+      server: https://kubernetes.default.svc
+    - namespace: secflow-sandbox
+      server: https://kubernetes.default.svc
+    - namespace: secflow-system
+      server: https://kubernetes.default.svc
+    - namespace: secflow-observability
+      server: https://kubernetes.default.svc
+    - namespace: argocd
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"

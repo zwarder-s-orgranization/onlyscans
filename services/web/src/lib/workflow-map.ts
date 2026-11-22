@@ -421,18 +421,49 @@ export function serializeNodeParams(
   pluginId: string,
   config: Record<string, string>,
   original?: Record<string, unknown>,
+  paramsJsonSchema?: { properties?: Record<string, { type?: string }> } | Record<string, unknown>,
 ): Record<string, unknown> {
   const spec = NODE_PARAM_SPECS[pluginId];
   if (!spec) {
-    // External hot-plug plugin: preserve original typed values when unchanged; otherwise pass through JSON or raw string.
+    // External / Declarative plugin: coerce typed values using paramsJsonSchema when available.
+    const schemaProps =
+      paramsJsonSchema &&
+      typeof paramsJsonSchema.properties === "object" &&
+      paramsJsonSchema.properties !== null
+        ? (paramsJsonSchema.properties as Record<string, { type?: string }>)
+        : undefined;
     const out: Record<string, unknown> = {};
     for (const [key, raw] of Object.entries(config)) {
+      const propType = schemaProps?.[key]?.type;
+      const trimmed = raw.trim();
+      if (propType === "boolean") {
+        if (trimmed === "") continue;
+        const parsed = parseBoolean(trimmed);
+        if (parsed !== undefined) {
+          out[key] = parsed;
+        }
+        continue;
+      }
+      if (propType === "integer" || propType === "number") {
+        if (trimmed === "") continue;
+        const parsed = Number(trimmed);
+        if (Number.isFinite(parsed)) {
+          out[key] = propType === "integer" ? Math.trunc(parsed) : parsed;
+        }
+        continue;
+      }
+      if (propType === "array") {
+        const items = parseStringArray(raw);
+        if (items.length > 0) {
+          out[key] = items;
+        }
+        continue;
+      }
       const prev = original?.[key];
       if (prev !== undefined && typeof prev !== "string" && displayParam(prev) === raw) {
         out[key] = prev;
         continue;
       }
-      const trimmed = raw.trim();
       if (trimmed === "") continue;
       if (
         (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
@@ -588,7 +619,12 @@ export function graphFromBoard(board: BoardShape): ServerGraph {
       pluginId: node.data.pluginId,
       label: node.data.label,
       position: { x: node.position.x, y: node.position.y },
-      params: serializeNodeParams(node.data.pluginId, node.data.config, node.data.params),
+      params: serializeNodeParams(
+        node.data.pluginId,
+        node.data.config,
+        node.data.params,
+        node.data.paramsJsonSchema,
+      ),
       secretBindings: (node.data.secretBindings ?? [])
         .filter((binding) => Boolean(binding?.paramKey?.trim() && binding?.secretRef?.trim()))
         .map((binding) => ({

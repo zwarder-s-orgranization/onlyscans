@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -45,9 +46,15 @@ func CheckCtx(ctx context.Context, raw string) error {
 }
 
 func checkHost(ctx context.Context, host string) error {
-	host = strings.ToLower(strings.TrimSpace(host))
+	host = strings.TrimRight(strings.ToLower(strings.TrimSpace(host)), ".")
 	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") || host == "metadata.google.internal" || host == "169.254.169.254" {
 		return ErrAllowlistDenied
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if isBlockedAddr(addr) {
+			return ErrAllowlistDenied
+		}
+		return nil
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		if isPrivateIP(ip) {
@@ -91,10 +98,17 @@ func NewSafeClient(timeout time.Duration) *http.Client {
 			if allowPrivate() {
 				return dialer.DialContext(ctx, network, addr)
 			}
-			if host == "" || strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") || strings.EqualFold(host, "metadata.google.internal") {
+			trimmedHost := strings.TrimRight(strings.ToLower(strings.TrimSpace(host)), ".")
+			if trimmedHost == "" || trimmedHost == "localhost" || strings.HasSuffix(trimmedHost, ".localhost") || trimmedHost == "metadata.google.internal" || trimmedHost == "169.254.169.254" {
 				return nil, ErrAllowlistDenied
 			}
-			if ip := net.ParseIP(host); ip != nil {
+			if addr, err := netip.ParseAddr(trimmedHost); err == nil {
+				if isBlockedAddr(addr) {
+					return nil, ErrAllowlistDenied
+				}
+				return dialer.DialContext(ctx, network, net.JoinHostPort(addr.String(), port))
+			}
+			if ip := net.ParseIP(trimmedHost); ip != nil {
 				if isPrivateIP(ip) {
 					return nil, ErrAllowlistDenied
 				}
@@ -149,19 +163,123 @@ var deniedScanners = []string{
 	"trufflehog",
 }
 
+var deniedScannerStems = []string{
+	"semgrep",
+	"gitleaks",
+	"trivy",
+	"detekt",
+	"osvscanner",
+	"grype",
+	"syft",
+	"snyk",
+	"bandit",
+	"sonarqube",
+	"checkmarx",
+	"codeql",
+	"trufflehog",
+}
+
 var scannerNormReplacer = strings.NewReplacer("_", "-", " ", "-")
+
+func stripToAlnum(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+func matchesDeniedScanner(candidate string) bool {
+	if candidate == "" {
+		return false
+	}
+	low := strings.ToLower(candidate)
+	norm := scannerNormReplacer.Replace(low)
+	for _, word := range deniedScanners {
+		if strings.Contains(low, word) || strings.Contains(norm, word) {
+			return true
+		}
+	}
+	compact := stripToAlnum(low)
+	for _, stem := range deniedScannerStems {
+		if strings.Contains(compact, stem) {
+			return true
+		}
+	}
+	return false
+}
+
+func hexByteValue(b byte) (byte, bool) {
+	switch {
+	case b >= '0' && b <= '9':
+		return b - '0', true
+	case b >= 'a' && b <= 'f':
+		return b - 'a' + 10, true
+	case b >= 'A' && b <= 'F':
+		return b - 'A' + 10, true
+	default:
+		return 0, false
+	}
+}
+
+func decodePercentTolerant(s string) (string, bool) {
+	if !strings.ContainsRune(s, '%') {
+		return s, false
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	changed := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) {
+			if hi, ok1 := hexByteValue(s[i+1]); ok1 {
+				if lo, ok2 := hexByteValue(s[i+2]); ok2 {
+					b.WriteByte(hi<<4 | lo)
+					changed = true
+					i += 2
+					continue
+				}
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	if !changed {
+		return s, false
+	}
+	return b.String(), true
+}
+
+func matchesDeniedWithPlus(candidate string) bool {
+	if matchesDeniedScanner(candidate) {
+		return true
+	}
+	if strings.ContainsRune(candidate, '+') {
+		return matchesDeniedScanner(strings.ReplaceAll(candidate, "+", " "))
+	}
+	return false
+}
 
 // Denied reports prohibited third-party security scanner product names that must not be invoked (ADR-0003).
 func Denied(raw string) bool {
 	if raw == "" {
 		return false
 	}
-	low := strings.ToLower(raw)
-	norm := scannerNormReplacer.Replace(low)
-	for _, word := range deniedScanners {
-		if strings.Contains(low, word) || strings.Contains(norm, word) {
+	cur := raw
+	for pass := range 4 {
+		if matchesDeniedWithPlus(cur) {
 			return true
 		}
+		if pass == 3 {
+			break
+		}
+		next, changed := decodePercentTolerant(cur)
+		if !changed || next == cur {
+			break
+		}
+		cur = next
 	}
 	return false
 }
@@ -174,9 +292,65 @@ func private(ip net.IP) bool {
 	return isPrivateIP(ip)
 }
 
+var blockedURLPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("255.255.255.255/32"),
+	netip.MustParsePrefix("::/96"),
+	netip.MustParsePrefix("::ffff:0:0/96"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("2001::/32"),
+	netip.MustParsePrefix("2001:2::/48"),
+	netip.MustParsePrefix("2001:db8::/32"),
+}
+
+func isZeroBytes(b []byte) bool {
+	for _, v := range b {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func isBlockedAddr(addr netip.Addr) bool {
+	if !addr.IsValid() || addr.Zone() != "" {
+		return true
+	}
+	for _, check := range []netip.Addr{addr, addr.Unmap()} {
+		if check.IsLoopback() || check.IsPrivate() || check.IsLinkLocalUnicast() || check.IsLinkLocalMulticast() || check.IsMulticast() || check.IsUnspecified() || check.IsInterfaceLocalMulticast() {
+			return true
+		}
+		for _, prefix := range blockedURLPrefixes {
+			if prefix.Contains(check) {
+				return true
+			}
+		}
+		if check.Is6() {
+			b := check.As16()
+			if isZeroBytes(b[:10]) && ((b[10] == 0 && b[11] == 0) || (b[10] == 0xff && b[11] == 0xff)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func isPrivateIP(ip net.IP) bool {
 	if ip == nil {
 		return true
 	}
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified()
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true
+	}
+	return isBlockedAddr(addr)
 }

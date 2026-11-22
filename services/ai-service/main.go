@@ -64,7 +64,15 @@ func main() {
 	}()
 	go func() {
 		m := aiExplainManifest()
-		if err := workerclient.Run(ctx, orchAddr, "ai-service", []*secflowv1.PluginManifest{m}, func(taskCtx context.Context, task *secflowv1.NodeTask) *secflowv1.NodeResult {
+		workerID := envutil.Get("WORKER_INSTANCE_ID", "")
+		if workerID == "" {
+			if host, hErr := os.Hostname(); hErr == nil && host != "" {
+				workerID = "ai-service-" + host
+			} else {
+				workerID = "ai-service"
+			}
+		}
+		if err := workerclient.Run(ctx, orchAddr, workerID, []*secflowv1.PluginManifest{m}, func(taskCtx context.Context, task *secflowv1.NodeTask) *secflowv1.NodeResult {
 			return svc.handleExplainTask(taskCtx, orchAddr, task)
 		}); err != nil && ctx.Err() == nil {
 			slog.Error("ai worker stopped", "err", err)
@@ -117,7 +125,7 @@ func (a *aiSvc) handleExplainTask(taskCtx context.Context, orchAddr string, task
 		boundAPIKey = plain
 		break
 	}
-	cfg := resolveLLMConfig(params, boundAPIKey)
+	cfg := a.resolveEffectiveLLMConfig(taskCtx, params, boundAPIKey)
 	explained, stripped, usedLLM, usedModel, usedMode := explainFindingsWithCache(taskCtx, cfg, params, task.GetEnvelopeJson(), a.cache)
 	a.recordAudit(taskCtx, auditMeta{
 		RunID:        task.GetRunId(),
@@ -252,7 +260,11 @@ func (a *aiSvc) recordAudit(ctx context.Context, meta auditMeta) {
 
 func (a *aiSvc) GenerateWorkflow(ctx context.Context, req *secflowv1.GenerateWorkflowRequest) (*secflowv1.GenerateWorkflowResponse, error) {
 	catalog := fetchLivePluginCatalog(ctx, a.orchAddr)
-	resp, meta := generateWorkflowWithCatalog(ctx, resolveLLMConfig(nil, ""), req.GetPrompt(), req.GetLocale(), catalog)
+	var cfg llmConfig
+	if saved, ok := a.loadProviderSettings(ctx); !ok || saved.AllowTextToWorkflow {
+		cfg = a.resolveEffectiveLLMConfig(ctx, nil, "")
+	}
+	resp, meta := generateWorkflowWithCatalog(ctx, cfg, req.GetPrompt(), req.GetLocale(), catalog)
 	a.recordAudit(ctx, auditMeta{
 		Operation:    secflowv1.AIOperation_AI_OPERATION_GENERATE_WORKFLOW,
 		PromptHash:   meta.PromptHash,
@@ -268,7 +280,7 @@ func (a *aiSvc) GenerateWorkflow(ctx context.Context, req *secflowv1.GenerateWor
 }
 
 func (a *aiSvc) GetProviderStatus(ctx context.Context, _ *secflowv1.GetProviderStatusRequest) (*secflowv1.GetProviderStatusResponse, error) {
-	return detectProviderStatus(ctx), nil
+	return a.providerStatus(ctx), nil
 }
 
 func (a *aiSvc) ListAuditLogs(_ context.Context, req *secflowv1.ListAuditLogsRequest) (*secflowv1.ListAuditLogsResponse, error) {

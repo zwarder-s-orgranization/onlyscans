@@ -1,0 +1,35 @@
+{{- if eq .Values.workerScaling.mode "keda" }}
+{{- $kedaPools := list
+  (dict "name" "worker-kotlin" "query" "sum(orchestrator_queue_depth{plugin_id=~\"scan\\\\.sast\\\\.kotlin|scan\\\\.secrets\"})" "pool" .Values.workerScaling.pools.workerKotlin)
+  (dict "name" "worker-sca" "query" "sum(orchestrator_queue_depth{plugin_id=\"scan.sca\"})" "pool" .Values.workerScaling.pools.workerSca)
+  (dict "name" "sbom-service" "query" "sum(orchestrator_queue_depth{plugin_id=\"sbom.generate\"})" "pool" .Values.workerScaling.pools.sbomService)
+  (dict "name" "ai-service" "query" "sum(orchestrator_queue_depth{plugin_id=\"ai.explain\"})" "pool" .Values.workerScaling.pools.aiService)
+  (dict "name" "notify-service" "query" "sum(orchestrator_queue_depth{plugin_id=~\"notify\\\\..*\"})" "pool" .Values.workerScaling.pools.notifyService)
+  (dict "name" "mcp-bridge" "query" "sum(orchestrator_queue_depth{plugin_id=\"mcp.tool\"})" "pool" .Values.workerScaling.pools.mcpBridge)
+}}
+{{- range $k := $kedaPools }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ $k.name }}-keda
+  namespace: {{ $.Values.namespaces.workers }}
+  labels:
+    app: {{ $k.name }}
+    {{- include "secflow.commonLabels" $ | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ $k.name }}
+  pollingInterval: 10
+  cooldownPeriod: {{ $k.pool.cooldownSeconds }}
+  minReplicaCount: {{ $k.pool.minReplicas }}
+  maxReplicaCount: {{ $k.pool.maxReplicas }}
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: {{ $.Values.keda.prometheusAddress | quote }}
+        metricName: orchestrator_queue_depth
+        threshold: {{ $k.pool.tasksPerWorker | quote }}
+        query: {{ $k.query | quote }}
+{{- end }}
+{{- end }}

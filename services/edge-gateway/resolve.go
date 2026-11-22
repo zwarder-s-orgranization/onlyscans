@@ -23,6 +23,7 @@ import (
 
 	secflowv1 "github.com/secflow/secflow/packages/proto/gen/go/secflow/v1"
 	"github.com/secflow/secflow/services/internal/auth"
+	"github.com/secflow/secflow/services/internal/declarativeplugin"
 )
 
 func (g *gateway) checkScopedWorkflow(claims *auth.Claims, workflowID string) error {
@@ -323,10 +324,12 @@ func (g *gateway) resolve(ctx context.Context, claims *auth.Claims, fieldName st
 	case "plugins":
 		wantCat := pluginCategoryProto(asString(args["category"]))
 		includeOffline := asBool(args["includeOffline"])
+		includeDisabled := asBool(args["includeDisabled"])
 		resp, err := g.plugs.ListPlugins(ctx, &secflowv1.ListPluginsRequest{
-			Actor:          actor,
-			Category:       wantCat,
-			IncludeOffline: includeOffline,
+			Actor:           actor,
+			Category:        wantCat,
+			IncludeOffline:  includeOffline,
+			IncludeDisabled: includeDisabled,
 		})
 		if err != nil {
 			return nil, err
@@ -351,6 +354,275 @@ func (g *gateway) resolve(ctx context.Context, claims *auth.Claims, fieldName st
 			return nil, err
 		}
 		return pluginMap(resp.GetPlugin()), nil
+	case "pluginInstallations":
+		resp, err := g.plugs.ListPluginInstallations(ctx, &secflowv1.ListPluginInstallationsRequest{
+			Actor: actor,
+		})
+		if err != nil {
+			return nil, err
+		}
+		items := make([]any, 0, len(resp.GetInstallations()))
+		for _, inst := range resp.GetInstallations() {
+			items = append(items, pluginInstallationMap(inst))
+		}
+		return items, nil
+	case "pluginInstallation":
+		resp, err := g.plugs.GetPluginInstallation(ctx, &secflowv1.GetPluginInstallationRequest{
+			Actor:          actor,
+			InstallationId: asString(args["id"]),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return pluginInstallationMap(resp.GetInstallation()), nil
+	case "pluginPresets":
+		resp, err := g.plugs.ListPluginPresets(ctx, &secflowv1.ListPluginPresetsRequest{
+			Actor: actor,
+		})
+		if err != nil {
+			return nil, err
+		}
+		items := make([]any, 0, len(resp.GetPresets()))
+		for _, preset := range resp.GetPresets() {
+			items = append(items, pluginPresetMap(preset))
+		}
+		return items, nil
+	case "installPlugin":
+		in := asMap(args["input"])
+		srcMode := pluginSourceModeProto(asString(in["sourceMode"]))
+		if srcMode != secflowv1.PluginSourceMode_PLUGIN_SOURCE_MODE_DECLARATIVE && roleRank(claims.Role) < 3 {
+			return nil, status.Error(codes.PermissionDenied, "FORBIDDEN: owner role required for non-declarative plugin installations")
+		}
+		var declRaw []byte
+		if in["declarativeSpec"] != nil {
+			declRaw, _ = json.Marshal(in["declarativeSpec"])
+		}
+		resp, err := g.plugs.InstallPlugin(ctx, &secflowv1.InstallPluginRequest{
+			Actor:               actor,
+			Name:                asString(in["name"]),
+			SourceMode:          srcMode,
+			PresetId:            asString(in["presetId"]),
+			ImageRef:            asString(in["imageRef"]),
+			SandboxProfile:      sandboxProfileProto(asString(in["sandboxProfile"])),
+			EgressAllowlist:     asStringSlice(in["egressAllowlist"]),
+			ResourceLimits:      pluginResourceLimitsFromAny(in["resourceLimits"]),
+			DesiredReplicas:     int32(asInt(in["desiredReplicas"], 0)),
+			AutoApprove:         asBool(in["autoApprove"]),
+			DeclarativeSpecJson: declRaw,
+			SaveAsDraft:         asBool(in["saveAsDraft"]),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"installation":         pluginInstallationMap(resp.GetInstallation()),
+			"plaintextPluginToken": emptyNil(resp.GetPlaintextPluginToken()),
+		}, nil
+	case "approvePluginInstallation":
+		in := asMap(args["input"])
+		resp, err := g.plugs.ApprovePluginInstallation(ctx, &secflowv1.ApprovePluginInstallationRequest{
+			Actor:                  actor,
+			InstallationId:         asString(in["installationId"]),
+			ExpectedManifestDigest: asString(in["expectedManifestDigest"]),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return pluginInstallationMap(resp.GetInstallation()), nil
+	case "updatePluginInstallation":
+		in := asMap(args["input"])
+		var declRaw []byte
+		if in["declarativeSpec"] != nil {
+			var err error
+			declRaw, err = json.Marshal(in["declarativeSpec"])
+			if err != nil {
+				return nil, status.Errorf(codes.InvalidArgument, "invalid declarativeSpec JSON: %v", err)
+			}
+		}
+		if len(declRaw) == 0 && !asBool(in["submitForApproval"]) && roleRank(claims.Role) < 3 {
+			return nil, status.Error(codes.PermissionDenied, "FORBIDDEN: owner role required")
+		}
+		resp, err := g.plugs.UpdatePluginInstallation(ctx, &secflowv1.UpdatePluginInstallationRequest{
+			Actor:               actor,
+			InstallationId:      asString(in["installationId"]),
+			ImageRef:            asString(in["imageRef"]),
+			SandboxProfile:      sandboxProfileProto(asString(in["sandboxProfile"])),
+			EgressAllowlist:     asStringSlice(in["egressAllowlist"]),
+			ResourceLimits:      pluginResourceLimitsFromAny(in["resourceLimits"]),
+			DesiredReplicas:     int32(asInt(in["desiredReplicas"], 0)),
+			RotateToken:         asBool(in["rotateToken"]),
+			DeclarativeSpecJson: declRaw,
+			SubmitForApproval:   asBool(in["submitForApproval"]),
+			ApproveImmediately:  asBool(in["approveImmediately"]),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"installation":         pluginInstallationMap(resp.GetInstallation()),
+			"plaintextPluginToken": emptyNil(resp.GetPlaintextPluginToken()),
+		}, nil
+	case "declarativePluginBlueprints":
+		bps := declarativeplugin.StarterBlueprints()
+		items := make([]any, 0, len(bps))
+		for _, bp := range bps {
+			specBytes, err := json.Marshal(bp.Spec)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "marshal starter blueprint %s: %v", bp.ID, err)
+			}
+			var specAny any
+			if err := json.Unmarshal(specBytes, &specAny); err != nil {
+				return nil, status.Errorf(codes.Internal, "decode starter blueprint %s: %v", bp.ID, err)
+			}
+			items = append(items, map[string]any{
+				"id":          bp.ID,
+				"name":        bp.Name,
+				"description": bp.Description,
+				"spec":        specAny,
+			})
+		}
+		return items, nil
+	case "testDeclarativePlugin":
+		in := asMap(args["input"])
+		specBytes, err := json.Marshal(in["declarativeSpec"])
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid declarativeSpec JSON: %v", err)
+		}
+		var paramsBytes, envBytes []byte
+		if in["params"] != nil {
+			if paramsBytes, err = json.Marshal(in["params"]); err != nil {
+				return nil, status.Errorf(codes.InvalidArgument, "invalid params JSON: %v", err)
+			}
+		}
+		if in["envelope"] != nil {
+			if envBytes, err = json.Marshal(in["envelope"]); err != nil {
+				return nil, status.Errorf(codes.InvalidArgument, "invalid envelope JSON: %v", err)
+			}
+		}
+		var vfiles []*secflowv1.VirtualFile
+		if rawFiles, ok := in["files"].([]any); ok {
+			for _, item := range rawFiles {
+				fm := asMap(item)
+				vfiles = append(vfiles, &secflowv1.VirtualFile{
+					Path:    asString(fm["path"]),
+					Content: asString(fm["content"]),
+				})
+			}
+		}
+		resp, err := g.plugs.TestDeclarativePlugin(ctx, &secflowv1.TestDeclarativePluginRequest{
+			Actor:               actor,
+			DeclarativeSpecJson: specBytes,
+			ParamsJson:          paramsBytes,
+			Files:               vfiles,
+			EnvelopeJson:        envBytes,
+		})
+		if err != nil {
+			return nil, err
+		}
+		findings := make([]any, 0, len(resp.GetFindings()))
+		for _, f := range resp.GetFindings() {
+			findings = append(findings, findingMap(f))
+		}
+		var patchAny, dryAny any
+		if len(resp.GetEnvelopePatchJson()) > 0 {
+			if err := json.Unmarshal(resp.GetEnvelopePatchJson(), &patchAny); err != nil {
+				return nil, status.Errorf(codes.Internal, "decode envelopePatch JSON: %v", err)
+			}
+		}
+		if len(resp.GetDryRunHttpJson()) > 0 {
+			if err := json.Unmarshal(resp.GetDryRunHttpJson(), &dryAny); err != nil {
+				return nil, status.Errorf(codes.Internal, "decode dryRunHttp JSON: %v", err)
+			}
+		}
+		return map[string]any{
+			"ok":                resp.GetOk(),
+			"validationErrors":  stringList(resp.GetValidationErrors()),
+			"findings":          findings,
+			"activeOutputPorts": stringList(resp.GetActiveOutputPorts()),
+			"envelopePatch":     patchAny,
+			"dryRunHttp":        dryAny,
+			"durationMs":        resp.GetDurationMs(),
+			"summary":           resp.GetSummary(),
+		}, nil
+	case "savedNodes":
+		resp, err := g.plugs.ListSavedNodes(ctx, &secflowv1.ListSavedNodesRequest{Actor: actor})
+		if err != nil {
+			return nil, err
+		}
+		items := make([]any, 0, len(resp.GetSavedNodes()))
+		for _, sn := range resp.GetSavedNodes() {
+			items = append(items, savedNodeMap(sn))
+		}
+		return items, nil
+	case "saveNode":
+		in := asMap(args["input"])
+		paramsBytes, err := json.Marshal(in["params"])
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid params JSON: %v", err)
+		}
+		resp, err := g.plugs.SaveNode(ctx, &secflowv1.SaveNodeRequest{
+			Actor:       actor,
+			Name:        asString(in["name"]),
+			Description: asString(in["description"]),
+			PluginId:    asString(in["pluginId"]),
+			ParamsJson:  paramsBytes,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return savedNodeMap(resp.GetSavedNode()), nil
+	case "updateSavedNode":
+		in := asMap(args["input"])
+		var paramsBytes []byte
+		if in["params"] != nil {
+			var err error
+			paramsBytes, err = json.Marshal(in["params"])
+			if err != nil {
+				return nil, status.Errorf(codes.InvalidArgument, "invalid params JSON: %v", err)
+			}
+		}
+		resp, err := g.plugs.UpdateSavedNode(ctx, &secflowv1.UpdateSavedNodeRequest{
+			Actor:       actor,
+			Id:          asString(in["id"]),
+			Name:        asString(in["name"]),
+			Description: asString(in["description"]),
+			ParamsJson:  paramsBytes,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return savedNodeMap(resp.GetSavedNode()), nil
+	case "deleteSavedNode":
+		resp, err := g.plugs.DeleteSavedNode(ctx, &secflowv1.DeleteSavedNodeRequest{
+			Actor: actor,
+			Id:    asString(args["id"]),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return resp.GetDeleted(), nil
+	case "setPluginInstallationEnabled":
+		in := asMap(args["input"])
+		resp, err := g.plugs.SetPluginInstallationEnabled(ctx, &secflowv1.SetPluginInstallationEnabledRequest{
+			Actor:          actor,
+			InstallationId: asString(in["installationId"]),
+			Enabled:        asBool(in["enabled"]),
+			Reason:         asString(in["reason"]),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return pluginInstallationMap(resp.GetInstallation()), nil
+	case "deletePluginInstallation":
+		resp, err := g.plugs.DeletePluginInstallation(ctx, &secflowv1.DeletePluginInstallationRequest{
+			Actor:          actor,
+			InstallationId: asString(args["id"]),
+			Reason:         asString(args["reason"]),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return resp.GetDeleted(), nil
 	case "templates":
 		limit := asInt(args["limit"], 25)
 		cursor := asString(args["cursor"])
@@ -1344,21 +1616,21 @@ func statsFrom(items []*secflowv1.Finding) map[string]any {
 	return stats
 }
 
-func pluginMap(p *secflowv1.RegisteredPlugin) map[string]any {
-	m := p.GetManifest()
+func portDefinitionsMap(list []*secflowv1.PortDefinition) []any {
+	out := make([]any, 0, len(list))
+	for _, port := range list {
+		out = append(out, map[string]any{
+			"id":          port.GetId(),
+			"label":       port.GetLabel(),
+			"description": emptyNil(port.GetDescription()),
+		})
+	}
+	return out
+}
+
+func pluginManifestMap(m *secflowv1.PluginManifest) map[string]any {
 	if m == nil {
 		m = &secflowv1.PluginManifest{}
-	}
-	ports := func(list []*secflowv1.PortDefinition) []any {
-		out := make([]any, 0, len(list))
-		for _, port := range list {
-			out = append(out, map[string]any{
-				"id":          port.GetId(),
-				"label":       port.GetLabel(),
-				"description": emptyNil(port.GetDescription()),
-			})
-		}
-		return out
 	}
 	var schema any = map[string]any{}
 	if len(m.GetParamsJsonSchema()) > 0 {
@@ -1366,7 +1638,6 @@ func pluginMap(p *secflowv1.RegisteredPlugin) map[string]any {
 	}
 	profile := first(trimEnum(m.GetSandboxProfile().String(), "SANDBOX_PROFILE_"), "ORCHESTRATOR_BUILTIN")
 	category := first(trimEnum(m.GetCategory().String(), "PLUGIN_CATEGORY_"), "LOGIC")
-	statusName := first(trimEnum(p.GetStatus().String(), "PLUGIN_STATUS_"), "ONLINE")
 	return map[string]any{
 		"pluginId":           m.GetPluginId(),
 		"version":            first(m.GetVersion(), "1.0.0"),
@@ -1375,17 +1646,201 @@ func pluginMap(p *secflowv1.RegisteredPlugin) map[string]any {
 		"category":           category,
 		"capabilities":       stringList(m.GetCapabilities()),
 		"paramsJsonSchema":   schema,
-		"inputPorts":         ports(m.GetInputPorts()),
-		"outputPorts":        ports(m.GetOutputPorts()),
+		"inputPorts":         portDefinitionsMap(m.GetInputPorts()),
+		"outputPorts":        portDefinitionsMap(m.GetOutputPorts()),
 		"runtimeLanguage":    m.GetRuntimeLanguage(),
 		"sandboxProfile":     profile,
 		"isExternal":         m.GetIsExternal(),
 		"requiredSecretKeys": stringList(m.GetRequiredSecretKeys()),
-		"status":             statusName,
-		"activeWorkers":      p.GetActiveWorkers(),
-		"queueDepth":         p.GetQueueDepth(),
-		"registeredAt":       stamp(p.GetRegisteredAt()),
-		"lastSeenAt":         stamp(p.GetLastSeenAt()),
+		"maxConcurrency":     m.GetMaxConcurrency(),
+	}
+}
+
+func pluginMap(p *secflowv1.RegisteredPlugin) map[string]any {
+	out := pluginManifestMap(p.GetManifest())
+	delete(out, "maxConcurrency")
+	statusName := first(trimEnum(p.GetStatus().String(), "PLUGIN_STATUS_"), "ONLINE")
+	out["status"] = statusName
+	out["activeWorkers"] = p.GetActiveWorkers()
+	out["queueDepth"] = p.GetQueueDepth()
+	out["registeredAt"] = stamp(p.GetRegisteredAt())
+	out["lastSeenAt"] = stamp(p.GetLastSeenAt())
+	out["installationId"] = emptyNil(p.GetInstallationId())
+	out["enabled"] = p.GetEnabled()
+	out["approvalPending"] = p.GetApprovalPending()
+	return out
+}
+
+func pluginResourceLimitsMap(rl *secflowv1.PluginResourceLimits) map[string]any {
+	if rl == nil {
+		rl = &secflowv1.PluginResourceLimits{}
+	}
+	return map[string]any{
+		"cpuRequest":    rl.GetCpuRequest(),
+		"cpuLimit":      rl.GetCpuLimit(),
+		"memoryRequest": rl.GetMemoryRequest(),
+		"memoryLimit":   rl.GetMemoryLimit(),
+		"minReplicas":   rl.GetMinReplicas(),
+		"maxReplicas":   rl.GetMaxReplicas(),
+	}
+}
+
+func pluginRuntimeDiagnosticsMap(diag *secflowv1.PluginRuntimeDiagnostics) map[string]any {
+	if diag == nil {
+		diag = &secflowv1.PluginRuntimeDiagnostics{}
+	}
+	return map[string]any{
+		"phase":           diag.GetPhase(),
+		"desiredReplicas": diag.GetDesiredReplicas(),
+		"readyReplicas":   diag.GetReadyReplicas(),
+		"message":         diag.GetMessage(),
+		"lastError":       diag.GetLastError(),
+		"updatedAt":       optStamp(diag.GetUpdatedAt()),
+	}
+}
+
+func pluginInstallationMap(inst *secflowv1.PluginInstallation) map[string]any {
+	if inst == nil {
+		inst = &secflowv1.PluginInstallation{}
+	}
+	manifests := make([]any, 0, len(inst.GetManifests()))
+	for _, m := range inst.GetManifests() {
+		manifests = append(manifests, pluginManifestMap(m))
+	}
+	pending := make([]any, 0, len(inst.GetPendingManifests()))
+	for _, m := range inst.GetPendingManifests() {
+		pending = append(pending, pluginManifestMap(m))
+	}
+	created := stamp(inst.GetCreatedAt())
+	updated := created
+	if inst.GetUpdatedAt() != nil {
+		updated = stamp(inst.GetUpdatedAt())
+	}
+	var declSpecAny, pendingDeclAny any
+	if len(inst.GetDeclarativeSpecJson()) > 0 {
+		_ = json.Unmarshal(inst.GetDeclarativeSpecJson(), &declSpecAny)
+	}
+	if len(inst.GetPendingDeclarativeSpecJson()) > 0 {
+		_ = json.Unmarshal(inst.GetPendingDeclarativeSpecJson(), &pendingDeclAny)
+	}
+	return map[string]any{
+		"id":                     inst.GetId(),
+		"name":                   inst.GetName(),
+		"sourceMode":             first(trimEnum(inst.GetSourceMode().String(), "PLUGIN_SOURCE_MODE_"), "EXTERNAL_PULL"),
+		"presetId":               emptyNil(inst.GetPresetId()),
+		"imageRef":               inst.GetImageRef(),
+		"sandboxProfile":         first(trimEnum(inst.GetSandboxProfile().String(), "SANDBOX_PROFILE_"), "INTERNAL_ONLY"),
+		"egressAllowlist":        stringList(inst.GetEgressAllowlist()),
+		"resourceLimits":         pluginResourceLimitsMap(inst.GetResourceLimits()),
+		"desiredReplicas":        inst.GetDesiredReplicas(),
+		"status":                 first(trimEnum(inst.GetStatus().String(), "PLUGIN_INSTALLATION_STATUS_"), "PROVISIONING"),
+		"statusReason":           emptyNil(inst.GetStatusReason()),
+		"autoApprove":            inst.GetAutoApprove(),
+		"approvedManifestDigest": emptyNil(inst.GetApprovedManifestDigest()),
+		"manifests":              manifests,
+		"pendingManifests":       pending,
+		"pluginIds":              stringList(inst.GetPluginIds()),
+		"runtimeDiagnostics":     pluginRuntimeDiagnosticsMap(inst.GetRuntimeDiagnostics()),
+		"createdBy":              inst.GetCreatedBy(),
+		"approvedBy":             emptyNil(inst.GetApprovedBy()),
+		"createdAt":              created,
+		"updatedAt":              updated,
+		"approvedAt":             optStamp(inst.GetApprovedAt()),
+		"declarativeSpec":        declSpecAny,
+		"pendingDeclarativeSpec": pendingDeclAny,
+		"pluginVersion":          first(inst.GetPluginVersion(), "1.0.0"),
+	}
+}
+
+func savedNodeMap(sn *secflowv1.SavedNode) map[string]any {
+	if sn == nil {
+		sn = &secflowv1.SavedNode{}
+	}
+	var paramsAny any = map[string]any{}
+	if len(sn.GetParamsJson()) > 0 {
+		_ = json.Unmarshal(sn.GetParamsJson(), &paramsAny)
+	}
+	created := stamp(sn.GetCreatedAt())
+	updated := created
+	if sn.GetUpdatedAt() != nil {
+		updated = stamp(sn.GetUpdatedAt())
+	}
+	return map[string]any{
+		"id":                  sn.GetId(),
+		"name":                sn.GetName(),
+		"description":         sn.GetDescription(),
+		"pluginId":            sn.GetPluginId(),
+		"params":              paramsAny,
+		"canonicalParamsHash": sn.GetCanonicalParamsHash(),
+		"createdBy":           sn.GetCreatedBy(),
+		"createdAt":           created,
+		"updatedAt":           updated,
+	}
+}
+
+func pluginPresetMap(p *secflowv1.PluginPreset) map[string]any {
+	if p == nil {
+		p = &secflowv1.PluginPreset{}
+	}
+	return map[string]any{
+		"id":                     p.GetId(),
+		"name":                   p.GetName(),
+		"description":            p.GetDescription(),
+		"imageRef":               p.GetImageRef(),
+		"category":               first(trimEnum(p.GetCategory().String(), "PLUGIN_CATEGORY_"), "ANALYZER"),
+		"sandboxProfile":         first(trimEnum(p.GetSandboxProfile().String(), "SANDBOX_PROFILE_"), "INTERNAL_ONLY"),
+		"pluginIds":              stringList(p.GetPluginIds()),
+		"outputPorts":            portDefinitionsMap(p.GetOutputPorts()),
+		"requiredSecretKeys":     stringList(p.GetRequiredSecretKeys()),
+		"defaultEgressAllowlist": stringList(p.GetDefaultEgressAllowlist()),
+		"defaultResourceLimits":  pluginResourceLimitsMap(p.GetDefaultResourceLimits()),
+		"autoApproveSupported":   p.GetAutoApproveSupported(),
+	}
+}
+
+func pluginSourceModeProto(v string) secflowv1.PluginSourceMode {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "PRESET":
+		return secflowv1.PluginSourceMode_PLUGIN_SOURCE_MODE_PRESET
+	case "OCI_IMAGE":
+		return secflowv1.PluginSourceMode_PLUGIN_SOURCE_MODE_OCI_IMAGE
+	case "EXTERNAL_PULL":
+		return secflowv1.PluginSourceMode_PLUGIN_SOURCE_MODE_EXTERNAL_PULL
+	case "DECLARATIVE":
+		return secflowv1.PluginSourceMode_PLUGIN_SOURCE_MODE_DECLARATIVE
+	default:
+		return secflowv1.PluginSourceMode_PLUGIN_SOURCE_MODE_UNSPECIFIED
+	}
+}
+
+func sandboxProfileProto(v string) secflowv1.SandboxProfile {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "ORCHESTRATOR_BUILTIN":
+		return secflowv1.SandboxProfile_SANDBOX_PROFILE_ORCHESTRATOR_BUILTIN
+	case "INTERNAL_ONLY":
+		return secflowv1.SandboxProfile_SANDBOX_PROFILE_INTERNAL_ONLY
+	case "EGRESS_EXTERNAL":
+		return secflowv1.SandboxProfile_SANDBOX_PROFILE_EGRESS_EXTERNAL
+	default:
+		return secflowv1.SandboxProfile_SANDBOX_PROFILE_UNSPECIFIED
+	}
+}
+
+func pluginResourceLimitsFromAny(v any) *secflowv1.PluginResourceLimits {
+	if v == nil {
+		return nil
+	}
+	m := asMap(v)
+	if len(m) == 0 {
+		return nil
+	}
+	return &secflowv1.PluginResourceLimits{
+		CpuRequest:    asString(m["cpuRequest"]),
+		CpuLimit:      asString(m["cpuLimit"]),
+		MemoryRequest: asString(m["memoryRequest"]),
+		MemoryLimit:   asString(m["memoryLimit"]),
+		MinReplicas:   int32(asInt(m["minReplicas"], 0)),
+		MaxReplicas:   int32(asInt(m["maxReplicas"], 0)),
 	}
 }
 

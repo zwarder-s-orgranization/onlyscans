@@ -1,0 +1,392 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: secflow-system
+  labels:
+    app: postgres
+spec:
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+  selector:
+    app: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: secflow-system
+  labels:
+    app: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: postgres
+          image: postgres:17.12-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: secflow-postgres
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: pgdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: secflow-system
+  labels:
+    app: redis
+spec:
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+  selector:
+    app: redis
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: secflow-system
+  labels:
+    app: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: redis
+          image: redis:8.10.3-alpine
+          imagePullPolicy: IfNotPresent
+          args: ["--save", "", "--appendonly", "no"]
+          ports:
+            - name: redis
+              containerPort: 6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage-config
+  namespace: secflow-system
+data:
+  garage.toml: |
+    metadata_dir = "/var/lib/garage/meta"
+    data_dir = "/var/lib/garage/data"
+    db_engine = "sqlite"
+    replication_factor = 1
+
+    rpc_bind_addr = "[::]:3901"
+    rpc_public_addr = "127.0.0.1:3901"
+    rpc_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+    [s3_api]
+    s3_region = "garage"
+    api_bind_addr = "[::]:3900"
+    root_domain = ".s3.garage.localhost"
+
+    [s3_web]
+    bind_addr = "[::]:3902"
+    root_domain = ".web.garage.localhost"
+    index = "index.html"
+
+    [admin]
+    api_bind_addr = "[::]:3903"
+    admin_token = "secflow-dev-garage-admin-token"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: garage
+  namespace: secflow-system
+  labels:
+    app: garage
+spec:
+  ports:
+    - name: s3
+      port: 3900
+      targetPort: 3900
+    - name: rpc
+      port: 3901
+      targetPort: 3901
+    - name: admin
+      port: 3903
+      targetPort: 3903
+  selector:
+    app: garage
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: garage
+  namespace: secflow-system
+  labels:
+    app: garage
+spec:
+  serviceName: garage
+  replicas: 1
+  selector:
+    matchLabels:
+      app: garage
+  template:
+    metadata:
+      labels:
+        app: garage
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: garage
+          image: dxflrs/garage:v2.5.0
+          imagePullPolicy: IfNotPresent
+          args: ["/garage", "-c", "/etc/garage.toml", "server"]
+          ports:
+            - name: s3
+              containerPort: 3900
+            - name: rpc
+              containerPort: 3901
+            - name: admin
+              containerPort: 3903
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+          readinessProbe:
+            tcpSocket:
+              port: admin
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /etc/garage.toml
+              subPath: garage.toml
+              readOnly: true
+            - name: garage-data
+              mountPath: /var/lib/garage
+      volumes:
+        - name: config
+          configMap:
+            name: garage-config
+  volumeClaimTemplates:
+    - metadata:
+        name: garage-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: garage-init
+  namespace: secflow-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secflow-garage-init-secrets
+  namespace: secflow-app
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["secflow-garage-creds"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secflow-garage-init-secrets
+  namespace: secflow-app
+subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: secflow-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secflow-garage-init-secrets
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secflow-garage-init-secrets
+  namespace: secflow-workers
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["secflow-garage-creds"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secflow-garage-init-secrets
+  namespace: secflow-workers
+subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: secflow-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secflow-garage-init-secrets
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secflow-garage-init-secrets
+  namespace: secflow-sandbox
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["secflow-garage-creds"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secflow-garage-init-secrets
+  namespace: secflow-sandbox
+subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: secflow-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secflow-garage-init-secrets
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: garage-init
+  namespace: secflow-system
+  labels:
+    app: garage-init
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app: garage-init
+    spec:
+      serviceAccountName: garage-init
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: garage-init
+          image: ghcr.io/secflow/garage-init:1.0.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: GARAGE_ENDPOINT
+              value: http://garage.secflow-system.svc.cluster.local:3900
+            - name: GARAGE_ADMIN_URL
+              value: http://garage.secflow-system.svc.cluster.local:3903
+            - name: GARAGE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-garage-admin
+                  key: GARAGE_ADMIN_TOKEN
+            - name: GARAGE_K8S_SECRET_NAME
+              value: secflow-garage-creds
+            - name: GARAGE_K8S_SECRET_NAMESPACES
+              value: secflow-app,secflow-workers,secflow-sandbox
+            - name: GARAGE_CRED_FILE
+              value: /tmp/garage.json
+            - name: DEFAULT_CATALOG_PATH
+              value: /mentor-training/vulnerability-database/vulnerabilities.json
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

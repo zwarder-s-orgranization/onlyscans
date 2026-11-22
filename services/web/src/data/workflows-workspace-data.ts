@@ -414,7 +414,7 @@ export const STARTER_TEMPLATES: StarterTemplateRecord[] = [
     category: "benchmark",
     tags: ["Repair Desk", "Kotlin PSI", "submission.json", "AI Explain"],
     isBuiltin: true,
-    authorSubject: "SecFlow Built-in",
+    authorSubject: "onlyscans Built-in",
     cloneCount: 38,
     createdAt: "Встроенный · v1.0",
     featured: true,
@@ -464,7 +464,7 @@ export const STARTER_TEMPLATES: StarterTemplateRecord[] = [
     category: "gate",
     tags: ["Policy Gate", "SBOM", "Telegram", "AI Explain"],
     isBuiltin: true,
-    authorSubject: "SecFlow Built-in",
+    authorSubject: "onlyscans Built-in",
     cloneCount: 29,
     createdAt: "Встроенный · v1.0",
     nodes: [
@@ -525,7 +525,7 @@ export const STARTER_TEMPLATES: StarterTemplateRecord[] = [
     category: "ci-cd",
     tags: ["CI/CD", "Webhook", "Secrets", "SCA"],
     isBuiltin: true,
-    authorSubject: "SecFlow Built-in",
+    authorSubject: "onlyscans Built-in",
     cloneCount: 24,
     createdAt: "Встроенный · v1.0",
     nodes: [
@@ -577,7 +577,7 @@ export const STARTER_TEMPLATES: StarterTemplateRecord[] = [
     category: "secrets",
     tags: ["Secrets", "Cron", "Regex", "SMTP"],
     isBuiltin: true,
-    authorSubject: "SecFlow Built-in",
+    authorSubject: "onlyscans Built-in",
     cloneCount: 19,
     createdAt: "Встроенный · v1.0",
     nodes: [
@@ -622,7 +622,7 @@ export const STARTER_TEMPLATES: StarterTemplateRecord[] = [
     category: "gate",
     tags: ["Switch", "MCP", "Telegram", "SAST"],
     isBuiltin: true,
-    authorSubject: "SecFlow Built-in",
+    authorSubject: "onlyscans Built-in",
     cloneCount: 17,
     createdAt: "Встроенный · v1.0",
     nodes: [
@@ -682,7 +682,7 @@ export const STARTER_TEMPLATES: StarterTemplateRecord[] = [
     category: "sca-sbom",
     tags: ["SCA", "SBOM", "CycloneDX 1.6", "Cron"],
     isBuiltin: true,
-    authorSubject: "SecFlow Built-in",
+    authorSubject: "onlyscans Built-in",
     cloneCount: 21,
     createdAt: "Встроенный · v1.0",
     nodes: [
@@ -728,7 +728,7 @@ export const STARTER_TEMPLATES: StarterTemplateRecord[] = [
     category: "gate",
     tags: ["Baseline Diff", "SAST", "Secrets", "Schedule"],
     isBuiltin: true,
-    authorSubject: "SecFlow Built-in",
+    authorSubject: "onlyscans Built-in",
     cloneCount: 14,
     createdAt: "Встроенный · v1.0",
     nodes: [
@@ -872,10 +872,10 @@ export const WORKSPACE_VARIANTS: WorkspaceVariantMeta[] = [
     systemLabel: "Flowmapp",
     indexInSystem: 1,
     globalNumber: "11",
-    name: "SecFlow Workflows",
+    name: "onlyscans Workflows",
     layoutKind: "Единый реестр + Canvas-верстак",
     summary:
-      "Финальный выбранный интерфейс SecFlow Workflows с единым поиском, фильтрами, модалкой создания досок и интерактивным канвасом с гибкими связями и правым 2-вкладочным сайдбаром.",
+      "Финальный выбранный интерфейс onlyscans Workflows с единым поиском, фильтрами, модалкой создания досок и интерактивным канвасом с гибкими связями и правым 2-вкладочным сайдбаром.",
     palette: ["#ffffff", "#0080ff", "#c5e0fb", "#000000"],
   },
 ];

@@ -23,13 +23,16 @@ import {
   type CanvasBoardNode,
   type CanvasBoardNodeData,
   type CanvasNodeTemplate,
+  type NodePluginHealth,
 } from "@/data/canvas-nodes-catalog";
+import { livePluginToCanvasTemplate, type LivePluginRecord } from "@/data/plugins-data";
 import type { NodeRunPaint } from "@/lib/workflow-map";
 import type {
   NodeFamily,
   PolicyVerdict,
   WorkflowRunStep,
 } from "@/data/workflows-workspace-data";
+import { useWorkspacePreview } from "./WorkspacePreviewContext";
 
 export type FlowCanvasNode = Node<CanvasBoardNodeData, "secflowNode">;
 
@@ -102,6 +105,25 @@ function fromFlowEdges(items: Edge[]): CanvasBoardEdge[] {
   }));
 }
 
+function computeNodePluginHealth(
+  data: CanvasBoardNodeData,
+  livePluginById: Map<string, LivePluginRecord>,
+): NodePluginHealth {
+  if (data.declarativeUnsaved) {
+    return "PLUGIN_UNREGISTERED";
+  }
+  if (!TEMPLATE_BY_PLUGIN_ID[data.pluginId]) {
+    const live = livePluginById.get(data.pluginId);
+    if (!live) {
+      return "PLUGIN_UNREGISTERED";
+    }
+    if (!live.enabled || live.approvalPending) {
+      return "PLUGIN_DISABLED";
+    }
+  }
+  return "OK";
+}
+
 export function useCanvasBoardController({
   boardId,
   initialNodes,
@@ -117,6 +139,8 @@ export function useCanvasBoardController({
   nodeRunStatuses,
 }: UseCanvasBoardControllerParams) {
   const { screenToFlowPosition, fitView } = useReactFlow();
+  const { livePlugins, lastRegistryEvent } = useWorkspacePreview();
+  const lastSeenRegistryEventRef = useRef<number | null>(null);
   const updateNodeInternals = useUpdateNodeInternals();
 
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowCanvasNode>(
@@ -124,6 +148,68 @@ export function useCanvasBoardController({
   );
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(
     toFlowEdges(initialEdges, edgeType, edgeColor),
+  );
+
+  // Merge built-in catalog with active/enabled external plugins from GraphQL / WorkspacePreviewContext
+  const mergedCatalog = useMemo<CanvasNodeTemplate[]>(() => {
+    const byId = new Map<string, CanvasNodeTemplate>();
+    for (const tpl of CANVAS_NODE_CATALOG) {
+      byId.set(tpl.pluginId, tpl);
+    }
+    for (const plug of livePlugins) {
+      if (!plug.enabled || plug.approvalPending) continue;
+      if (byId.has(plug.pluginId)) continue;
+      byId.set(plug.pluginId, livePluginToCanvasTemplate(plug));
+    }
+    return Array.from(byId.values());
+  }, [livePlugins]);
+
+  const catalogByPluginId = useMemo<Record<string, CanvasNodeTemplate>>(() => {
+    const map: Record<string, CanvasNodeTemplate> = {};
+    for (const tpl of mergedCatalog) {
+      map[tpl.pluginId] = tpl;
+    }
+    return map;
+  }, [mergedCatalog]);
+
+  const livePluginById = useMemo(() => {
+    const map = new Map<string, (typeof livePlugins)[number]>();
+    for (const p of livePlugins) {
+      map.set(p.pluginId, p);
+    }
+    return map;
+  }, [livePlugins]);
+
+  // Surface live toast notification when a new plugin registers/is approved without reload
+  useEffect(() => {
+    if (!lastRegistryEvent) return;
+    if (lastSeenRegistryEventRef.current === lastRegistryEvent.id) return;
+    lastSeenRegistryEventRef.current = lastRegistryEvent.id;
+    onNotice?.(lastRegistryEvent.message);
+  }, [lastRegistryEvent, onNotice]);
+
+  // Non-destructive validation of external plugin health (PLUGIN_DISABLED / PLUGIN_UNREGISTERED)
+  useEffect(() => {
+    setNodes((prev) => {
+      let changed = false;
+      const next = prev.map((n) => {
+        const health = computeNodePluginHealth(n.data, livePluginById);
+        if ((n.data.pluginHealth ?? "OK") === health) return n;
+        changed = true;
+        return { ...n, data: { ...n.data, pluginHealth: health } };
+      });
+      return changed ? next : prev;
+    });
+  }, [livePluginById, setNodes]);
+
+  const blockedPluginNodes = useMemo(
+    () =>
+      nodes.filter(
+        (n) =>
+          n.data.pluginHealth === "PLUGIN_DISABLED" ||
+          n.data.pluginHealth === "PLUGIN_UNREGISTERED",
+      ),
+    [nodes],
   );
 
   useEffect(() => {
@@ -220,14 +306,22 @@ export function useCanvasBoardController({
       setUndoDepth(0);
       setIsRunning(false);
       setRunLog([]);
-      setNodes(toFlowNodes(initialNodes));
+      setNodes(
+        toFlowNodes(initialNodes).map((n) => ({
+          ...n,
+          data: {
+            ...n.data,
+            pluginHealth: computeNodePluginHealth(n.data, livePluginById),
+          },
+        })),
+      );
       setEdges(toFlowEdges(initialEdges, edgeType, edgeColor));
       setSelectedNodeId(initialNodes[0]?.id ?? null);
       window.requestAnimationFrame(() => {
         void fitView({ padding: 0.22, maxZoom: 1.05, duration: 200 });
       });
     }
-  }, [boardId, initialNodes, initialEdges, edgeType, edgeColor, clearTimers, setNodes, setEdges, fitView]);
+  }, [boardId, initialNodes, initialEdges, edgeType, edgeColor, livePluginById, clearTimers, setNodes, setEdges, fitView]);
 
   const syncToParent = useCallback(
     (nextNodes: FlowCanvasNode[], nextEdges: Edge[]) => {
@@ -238,7 +332,7 @@ export function useCanvasBoardController({
 
   const filteredCatalog = useMemo(() => {
     const q = paletteQuery.trim().toLowerCase();
-    return CANVAS_NODE_CATALOG.filter((tpl) => {
+    return mergedCatalog.filter((tpl) => {
       if (categoryFilter !== "ALL" && tpl.family !== categoryFilter) {
         return false;
       }
@@ -251,11 +345,11 @@ export function useCanvasBoardController({
         tpl.pluginId.toLowerCase().includes(q)
       );
     });
-  }, [categoryFilter, paletteQuery]);
+  }, [mergedCatalog, categoryFilter, paletteQuery]);
 
   const categoryCounts = useMemo(() => {
     const counts: Record<"ALL" | NodeFamily, number> = {
-      ALL: CANVAS_NODE_CATALOG.length,
+      ALL: mergedCatalog.length,
       trigger: 0,
       source: 0,
       analyzer: 0,
@@ -263,11 +357,11 @@ export function useCanvasBoardController({
       ai: 0,
       action: 0,
     };
-    for (const tpl of CANVAS_NODE_CATALOG) {
+    for (const tpl of mergedCatalog) {
       counts[tpl.family] += 1;
     }
     return counts;
-  }, []);
+  }, [mergedCatalog]);
 
   const selectedNode = useMemo(
     () => nodes.find((n) => n.id === selectedNodeId) ?? null,
@@ -301,10 +395,14 @@ export function useCanvasBoardController({
   }, []);
 
   const addTemplateNode = useCallback(
-    (tpl: CanvasNodeTemplate, explicitPosition?: { x: number; y: number }) => {
+    (
+      tpl: CanvasNodeTemplate,
+      explicitPosition?: { x: number; y: number },
+      dataPatch?: Partial<CanvasBoardNodeData>,
+    ): FlowCanvasNode | null => {
       if (!canEdit) {
         onNotice?.("Режим viewer: редактирование графа отключено");
-        return;
+        return null;
       }
       let nextPos = explicitPosition;
       if (!nextPos) {
@@ -314,11 +412,24 @@ export function useCanvasBoardController({
           : { x: 100, y: 180 };
       }
       const created = createCanvasNodeFromTemplate(tpl, nextPos);
+      const baseData: CanvasBoardNodeData = dataPatch
+        ? {
+            ...created.data,
+            ...dataPatch,
+            config: dataPatch.config
+              ? { ...created.data.config, ...dataPatch.config }
+              : created.data.config,
+          }
+        : created.data;
+      const mergedData: CanvasBoardNodeData = {
+        ...baseData,
+        pluginHealth: dataPatch?.pluginHealth ?? computeNodePluginHealth(baseData, livePluginById),
+      };
       const flowNode: FlowCanvasNode = {
         id: created.id,
         type: "secflowNode",
         position: created.position,
-        data: created.data,
+        data: mergedData,
       };
       pushHistory(nodes, edges);
       const nextNodes = [...nodes, flowNode];
@@ -345,9 +456,33 @@ export function useCanvasBoardController({
       setNodes(nextNodes);
       setSelectedNodeId(flowNode.id);
       syncToParent(nextNodes, nextEdges);
-      onNotice?.(`Добавлена нода «${tpl.label}»`);
+      onNotice?.(`Добавлена нода «${mergedData.label}»`);
+      return flowNode;
     },
-    [canEdit, nodes, edges, selectedNode, edgeType, edgeColor, setNodes, setEdges, syncToParent, pushHistory, onNotice],
+    [canEdit, nodes, edges, selectedNode, edgeType, edgeColor, livePluginById, setNodes, setEdges, syncToParent, pushHistory, onNotice],
+  );
+
+  const patchNodeData = useCallback(
+    (nodeId: string, patch: Partial<CanvasBoardNodeData>) => {
+      if (!canEdit) return;
+      const nextNodes = nodes.map((n) => {
+        if (n.id !== nodeId) return n;
+        const nextData: CanvasBoardNodeData = {
+          ...n.data,
+          ...patch,
+          config: patch.config ? { ...n.data.config, ...patch.config } : n.data.config,
+        };
+        nextData.pluginHealth =
+          patch.pluginHealth ?? computeNodePluginHealth(nextData, livePluginById);
+        return { ...n, data: nextData };
+      });
+      setNodes(nextNodes);
+      if (patch.outputs) {
+        window.requestAnimationFrame(() => updateNodeInternals(nodeId));
+      }
+      syncToParent(nextNodes, edges);
+    },
+    [canEdit, nodes, edges, livePluginById, setNodes, syncToParent, updateNodeInternals],
   );
 
   const onDropCanvas = useCallback(
@@ -358,7 +493,7 @@ export function useCanvasBoardController({
 
       const pluginId =
         event.dataTransfer.getData(DND_NODE_MIME) || event.dataTransfer.getData("text/plain");
-      const tpl = TEMPLATE_BY_PLUGIN_ID[pluginId];
+      const tpl = catalogByPluginId[pluginId] ?? TEMPLATE_BY_PLUGIN_ID[pluginId];
       if (!tpl) return;
 
       const flowPosition = screenToFlowPosition({
@@ -371,7 +506,7 @@ export function useCanvasBoardController({
         y: Math.round(flowPosition.y - 36),
       });
     },
-    [canEdit, screenToFlowPosition, addTemplateNode],
+    [canEdit, catalogByPluginId, screenToFlowPosition, addTemplateNode],
   );
 
   const onConnect = useCallback(
@@ -487,7 +622,16 @@ export function useCanvasBoardController({
     (nodeId: string, label: string) => {
       if (!canEdit) return;
       const nextNodes = nodes.map((n) =>
-        n.id === nodeId ? { ...n, data: { ...n.data, label } } : n,
+        n.id === nodeId
+          ? {
+              ...n,
+              data: {
+                ...n.data,
+                label,
+                ...(n.data.installationId && n.data.declarativeSpec ? { declarativeDirty: true } : {}),
+              },
+            }
+          : n,
       );
       setNodes(nextNodes);
       syncToParent(nextNodes, edges);
@@ -502,18 +646,21 @@ export function useCanvasBoardController({
       const nextNodes = nodes.map((n) => {
         if (n.id !== nodeId) return n;
         const nextConfig = { ...n.data.config, [key]: value };
+        const dirtyPatch =
+          n.data.installationId && n.data.declarativeSpec ? { declarativeDirty: true } : {};
         if (n.data.pluginId === "logic.switch" && key === "mode") {
           portsChanged = true;
           return {
             ...n,
             data: {
               ...n.data,
+              ...dirtyPatch,
               outputs: getSwitchOutputPorts(value),
               config: nextConfig,
             },
           };
         }
-        return { ...n, data: { ...n.data, config: nextConfig } };
+        return { ...n, data: { ...n.data, ...dirtyPatch, config: nextConfig } };
       });
       setNodes(nextNodes);
       if (portsChanged) {
@@ -544,6 +691,18 @@ export function useCanvasBoardController({
           },
         };
       });
+      setNodes(nextNodes);
+      syncToParent(nextNodes, edges);
+    },
+    [canEdit, nodes, edges, setNodes, syncToParent],
+  );
+
+  const replaceNodeConfig = useCallback(
+    (nodeId: string, nextConfig: Record<string, string>) => {
+      if (!canEdit) return;
+      const nextNodes = nodes.map((n) =>
+        n.id === nodeId ? { ...n, data: { ...n.data, config: { ...nextConfig } } } : n,
+      );
       setNodes(nextNodes);
       syncToParent(nextNodes, edges);
     },
@@ -596,6 +755,15 @@ export function useCanvasBoardController({
 
   const runCanvasSimulation = useCallback(() => {
     if (nodes.length === 0 || isRunning) return;
+    if (blockedPluginNodes.length > 0) {
+      const first = blockedPluginNodes[0];
+      const code = first.data.pluginHealth ?? "PLUGIN_DISABLED";
+      onNotice?.(
+        `Запуск заблокирован (${code}): узел «${first.data.label}» (${first.data.pluginId}) недоступен. Включите плагин в Настройки → Плагины.`,
+      );
+      setSelectedNodeId(first.id);
+      return;
+    }
     clearTimers();
     setIsRunning(true);
     setRunLog(["Старт детерминированного прогона графа (DAG)..."]);
@@ -771,7 +939,7 @@ export function useCanvasBoardController({
       onNotice?.(`Прогон доски завершён (${nodes.length} нод, ${waves.length} волн)`);
     }, offset + 80);
     timersRef.current.push(finishTimer);
-  }, [boardId, nodes, edges, isRunning, policyGate, clearTimers, setNodes, setEdges, syncToParent, edgeColor, activeEdgeColor, onRunCompleted, onNotice]);
+  }, [boardId, nodes, edges, isRunning, blockedPluginNodes, policyGate, clearTimers, setNodes, setEdges, syncToParent, edgeColor, activeEdgeColor, onRunCompleted, onNotice]);
 
   return {
     nodes,
@@ -787,15 +955,19 @@ export function useCanvasBoardController({
     paletteQuery,
     setPaletteQuery,
     filteredCatalog,
+    catalogByPluginId,
     categoryCounts,
+    blockedPluginNodes,
     isDragOver,
     isRunning,
     runLog,
+    screenToFlowPosition,
     onDragStartNode,
     onDragOverCanvas,
     onDragLeaveCanvas,
     onDropCanvas,
     addTemplateNode,
+    patchNodeData,
     deleteNodeById,
     deleteNodesByIds,
     deleteEdgesByIds,
@@ -806,6 +978,7 @@ export function useCanvasBoardController({
     canUndo: undoDepth > 0,
     updateNodeLabel,
     updateNodeConfig,
+    replaceNodeConfig,
     updateNodeSecretBinding,
     handleAutoLayout,
     handleClearCanvas,

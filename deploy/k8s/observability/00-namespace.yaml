@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: secflow-observability
+  labels:
+    kubernetes.io/metadata.name: secflow-observability
+    app.kubernetes.io/part-of: secflow

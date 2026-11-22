@@ -263,6 +263,43 @@ func (g *gateway) execSubscription(ctx context.Context, oc *graphql.OperationCon
 			return projectEvent(callCtx, payload)
 		}
 
+	case "pluginInstallationEvents":
+		if g.plugs == nil {
+			return subErr(&gqlerror.Error{
+				Message:    "plugin registry unavailable",
+				Path:       ast.Path{ast.PathName(cf.Alias)},
+				Extensions: map[string]any{"code": "INTERNAL"},
+			})
+		}
+		stream, err := g.plugs.WatchPluginInstallations(ctx, &secflowv1.WatchPluginInstallationsRequest{
+			Actor:          actor,
+			InstallationId: asString(args["installationId"]),
+		})
+		if err != nil {
+			ge := graphqlErr(err)
+			ge.Path = ast.Path{ast.PathName(cf.Alias)}
+			return subErr(ge)
+		}
+		return func(callCtx context.Context) *graphql.Response {
+			if callCtx.Err() != nil {
+				return nil
+			}
+			msg, recvErr := stream.Recv()
+			if recvErr != nil {
+				return nil
+			}
+			ev := msg.GetEvent()
+			if ev == nil {
+				return nil
+			}
+			payload := map[string]any{
+				"eventType":    first(trimEnum(ev.GetEventType().String(), "PLUGIN_INSTALLATION_EVENT_TYPE_"), "UPDATED"),
+				"installation": pluginInstallationMap(ev.GetInstallation()),
+				"occurredAt":   stamp(ev.GetOccurredAt()),
+			}
+			return projectEvent(callCtx, payload)
+		}
+
 	case "webhookInspectorEvents":
 		channelKey := asString(args["channelKey"])
 		initial, ch, unsubscribe := g.subscribeInspector(channelKey)

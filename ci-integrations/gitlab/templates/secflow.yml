@@ -1,0 +1,228 @@
+# SecFlow GitLab CI/CD Component (GitLab equivalent of GitHub Actions `uses:`).
+# Include via `include: component:` (GitLab CI/CD Catalog) or `include: project:` / `include: local:`.
+spec:
+  inputs:
+    stage:
+      default: test
+      description: "Pipeline stage for the SecFlow job"
+    job_name:
+      default: secflow_scan
+      description: "Name of the generated GitLab CI job"
+    workflow_id:
+      description: "SecFlow workflow ID to run"
+    secflow_url:
+      default: "http://edge-gateway:8080"
+      description: "SecFlow edge-gateway base URL (local service domain or host URL)"
+    repo_url:
+      default: ""
+      description: "Repository HTTPS URL override (defaults to CI_PROJECT_URL)"
+    git_ref:
+      default: ""
+      description: "Git branch/ref override (defaults to CI_COMMIT_REF_NAME)"
+    commit_sha:
+      default: ""
+      description: "Commit SHA override (defaults to CI_COMMIT_SHA)"
+    image:
+      default: "curlimages/curl:8.11.1"
+      description: "Container image with curl and POSIX sh"
+    poll_interval:
+      type: number
+      default: 2
+      description: "Polling interval in seconds"
+    poll_timeout:
+      type: number
+      default: 180
+      description: "Maximum wait time in seconds"
+    fail_on_gate:
+      type: boolean
+      default: true
+      description: "Fail the job when SecFlow policy gateResult.status is FAIL"
+    output_dir:
+      default: "secflow-result"
+      description: "Directory where downloaded SecFlow result files are saved"
+---
+"$[[ inputs.job_name ]]":
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  variables:
+    # SecFlow clones the repository via repoUrlOverride — skip redundant runner checkout.
+    GIT_STRATEGY: none
+    SECFLOW_URL: "$[[ inputs.secflow_url ]]"
+    SECFLOW_WORKFLOW_ID: "$[[ inputs.workflow_id ]]"
+    INPUT_REPO_URL: "$[[ inputs.repo_url ]]"
+    INPUT_GIT_REF: "$[[ inputs.git_ref ]]"
+    INPUT_COMMIT_SHA: "$[[ inputs.commit_sha ]]"
+    POLL_INTERVAL: "$[[ inputs.poll_interval ]]"
+    POLL_TIMEOUT: "$[[ inputs.poll_timeout ]]"
+    FAIL_ON_GATE: "$[[ inputs.fail_on_gate ]]"
+    OUT_DIR: "$[[ inputs.output_dir ]]"
+  script:
+    - |
+      set -eu
+
+      SECFLOW_URL="${SECFLOW_URL%/}"
+      REPO_URL="${INPUT_REPO_URL:-${CI_PROJECT_URL:-}}"
+      GIT_REF="${INPUT_GIT_REF:-${CI_COMMIT_REF_NAME:-main}}"
+      COMMIT_SHA="${INPUT_COMMIT_SHA:-${CI_COMMIT_SHA:-}}"
+      IDEMPOTENCY_KEY="gl-${CI_PIPELINE_ID:-0}-${CI_JOB_ID:-0}-${SECFLOW_WORKFLOW_ID}"
+      mkdir -p "$OUT_DIR"
+
+      json_escape() {
+        printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+      }
+
+      if [ -z "${SECFLOW_WORKFLOW_ID:-}" ]; then
+        echo "ERROR: input 'workflow_id' is required." >&2
+        exit 1
+      fi
+
+      if [ -z "${REPO_URL:-}" ]; then
+        echo "ERROR: could not determine repository URL; set input 'repo_url'." >&2
+        exit 1
+      fi
+
+      # 1. Authenticate (prefer masked CI/CD Variable SECFLOW_TOKEN; fallback to local login)
+      TOKEN="${SECFLOW_TOKEN:-}"
+      if [ -z "$TOKEN" ]; then
+        if [ -n "${SECFLOW_EMAIL:-}" ] && [ -n "${SECFLOW_PASSWORD:-}" ]; then
+          LOGIN_BODY=$(printf '{"query":"mutation Login($input: LoginInput!) { login(input: $input) { accessToken } }","variables":{"input":{"email":"%s","password":"%s"}}}' \
+            "$(json_escape "$SECFLOW_EMAIL")" \
+            "$(json_escape "$SECFLOW_PASSWORD")")
+          LOGIN_RESP=$(curl -sS --connect-timeout 10 --max-time 30 \
+            -X POST "$SECFLOW_URL/graphql" \
+            -H "Content-Type: application/json" \
+            -d "$LOGIN_BODY")
+          TOKEN=$(printf '%s' "$LOGIN_RESP" | sed -n 's/.*"accessToken"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+          if [ -z "$TOKEN" ]; then
+            echo "ERROR: SecFlow login failed: $LOGIN_RESP" >&2
+            exit 1
+          fi
+        else
+          echo "ERROR: set CI/CD variable SECFLOW_TOKEN (or SECFLOW_EMAIL + SECFLOW_PASSWORD for local auth)." >&2
+          exit 1
+        fi
+      fi
+
+      # 2. Start SecFlow workflow with repository URL + ref + commit SHA
+      START_BODY=$(printf '{"query":"mutation StartRun($input: StartRunInput!) { startRun(input: $input) { id status } }","variables":{"input":{"workflowId":"%s","repoUrlOverride":"%s","gitRefOverride":"%s","commitShaOverride":"%s","idempotencyKey":"%s"}}}' \
+        "$(json_escape "$SECFLOW_WORKFLOW_ID")" \
+        "$(json_escape "$REPO_URL")" \
+        "$(json_escape "$GIT_REF")" \
+        "$(json_escape "$COMMIT_SHA")" \
+        "$(json_escape "$IDEMPOTENCY_KEY")")
+
+      START_RESP=$(curl -sS --connect-timeout 10 --max-time 30 \
+        -X POST "$SECFLOW_URL/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $TOKEN" \
+        -d "$START_BODY")
+
+      RUN_ID=$(printf '%s' "$START_RESP" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+      if [ -z "$RUN_ID" ]; then
+        echo "ERROR: Failed to start SecFlow run: $START_RESP" >&2
+        exit 1
+      fi
+      echo "Started SecFlow run: $RUN_ID (repo: $REPO_URL @ $GIT_REF)"
+
+      # 3. Poll until terminal status
+      STATUS="QUEUED"
+      RUN_JSON=""
+      MAX_ATTEMPTS=$(( POLL_TIMEOUT / POLL_INTERVAL ))
+      if [ "$MAX_ATTEMPTS" -lt 1 ]; then
+        MAX_ATTEMPTS=1
+      fi
+
+      POLL_BODY=$(printf '{"query":"query GetRun($id: ID!) { run(id: $id) { id runStatus: status errorMessage gateResult { gateStatus: status reason } findingsStats { total critical high medium low secretCount sastCount scaCount } sbom { digest componentCount } aiReport { releaseDecision executiveSummary } } }","variables":{"id":"%s"}}' \
+        "$(json_escape "$RUN_ID")")
+
+      i=0
+      while [ "$i" -lt "$MAX_ATTEMPTS" ]; do
+        i=$(( i + 1 ))
+        RUN_JSON=$(curl -sS --connect-timeout 10 --max-time 30 \
+          -X POST "$SECFLOW_URL/graphql" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer $TOKEN" \
+          -d "$POLL_BODY")
+        STATUS=$(printf '%s' "$RUN_JSON" | sed -n 's/.*"runStatus"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+        case "$STATUS" in
+          SUCCEEDED|FAILED|CANCELLED) break ;;
+        esac
+        sleep "$POLL_INTERVAL"
+      done
+
+      case "$STATUS" in
+        SUCCEEDED|FAILED|CANCELLED) ;;
+        *) STATUS="TIMEOUT" ;;
+      esac
+
+      GATE_STATUS=$(printf '%s' "$RUN_JSON" | sed -n 's/.*"gateStatus"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+      printf '%s\n' "$RUN_JSON" > "$OUT_DIR/run.json"
+      echo "SecFlow run $RUN_ID finished: status=$STATUS gate=${GATE_STATUS:-N/A}"
+
+      # 4. Fetch workflow outputs if produced
+      fetch_artifact() {
+        endpoint="$1"
+        dest="$2"
+        http_code=$(curl -sS --connect-timeout 10 --max-time 30 \
+          -o "$dest" -w '%{http_code}' \
+          -H "Authorization: Bearer $TOKEN" \
+          "$SECFLOW_URL/runs/$RUN_ID/$endpoint" || printf '000')
+        if [ "$http_code" != "200" ] || [ ! -s "$dest" ]; then
+          rm -f "$dest"
+          return 1
+        fi
+        return 0
+      }
+
+      SUBMISSION_FILE=""
+      REPORT_FILE=""
+      SBOM_FILE=""
+
+      if fetch_artifact "submission.json" "$OUT_DIR/submission.json"; then
+        SUBMISSION_FILE="$OUT_DIR/submission.json"
+        echo "--- SecFlow submission.json ---"
+        cat "$SUBMISSION_FILE"
+        echo ""
+      fi
+
+      if fetch_artifact "report.md" "$OUT_DIR/report.md"; then
+        REPORT_FILE="$OUT_DIR/report.md"
+        echo "--- SecFlow report.md ---"
+        cat "$REPORT_FILE"
+        echo ""
+      fi
+
+      if printf '%s' "$RUN_JSON" | grep -q '"digest"[[:space:]]*:[[:space:]]*"[^"]'; then
+        if fetch_artifact "sbom.cdx.json" "$OUT_DIR/sbom.cdx.json"; then
+          SBOM_FILE="$OUT_DIR/sbom.cdx.json"
+          echo "Saved CycloneDX SBOM to $SBOM_FILE"
+        fi
+      fi
+
+      # Export outputs to downstream GitLab CI jobs via dotenv report
+      cat <<EOF > "$OUT_DIR/secflow.env"
+      SECFLOW_RUN_ID=$RUN_ID
+      SECFLOW_STATUS=$STATUS
+      SECFLOW_GATE_STATUS=$GATE_STATUS
+      SECFLOW_RESULT_DIR=$OUT_DIR
+      SECFLOW_SUBMISSION_FILE=$SUBMISSION_FILE
+      SECFLOW_REPORT_FILE=$REPORT_FILE
+      SECFLOW_SBOM_FILE=$SBOM_FILE
+      EOF
+
+      # 5. Enforce workflow and policy gate result
+      if [ "$STATUS" != "SUCCEEDED" ]; then
+        echo "SecFlow workflow did not succeed (status=$STATUS): $RUN_JSON" >&2
+        exit 1
+      fi
+      if [ "${FAIL_ON_GATE:-true}" = "true" ] && [ "$GATE_STATUS" = "FAIL" ]; then
+        echo "SecFlow policy gate failed (gateResult.status=FAIL)" >&2
+        exit 1
+      fi
+  artifacts:
+    when: always
+    paths:
+      - "$[[ inputs.output_dir ]]/"
+    reports:
+      dotenv: "$[[ inputs.output_dir ]]/secflow.env"
+    expire_in: 7 days

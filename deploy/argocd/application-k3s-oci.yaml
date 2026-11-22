@@ -1,0 +1,72 @@
+# Argo CD Application for k3s consuming the OCI Helm chart automatically built & pushed
+# by .github/workflows/helm-release.yml to ghcr.io/zwarder-s-orgranization/charts/onlyscans.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: onlyscans-k3s
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: onlyscans
+  sources:
+    - repoURL: ghcr.io/zwarder-s-orgranization/charts
+      chart: onlyscans
+      targetRevision: "0.1.*"
+      helm:
+        releaseName: onlyscans
+        valueFiles:
+          - $values/deploy/charts/onlyscans/values-k3s.yaml
+        valuesObject:
+          global:
+            imageRegistry: ghcr.io/zwarder-s-orgranization/onlyscans
+            imageTag: latest
+            # Replace with your real HTTPS domain served by Angie:
+            publicUrl: "https://onlyscans.zwarder.ru"
+            corsAllowOrigins: "https://onlyscans.zwarder.ru,http://localhost:3000"
+            # Uncomment if GHCR images are private (after creating regcred in secflow-app & secflow-workers):
+            # imagePullSecrets:
+            #   - name: ghcr-pull-secret
+          ingress:
+            enabled: false
+          web:
+            service:
+              type: NodePort
+              nodePort: 30300
+          edgeGateway:
+            service:
+              type: NodePort
+              nodePort: 30808
+          observability:
+            enabled: true
+            grafana:
+              service:
+                type: NodePort
+                nodePort: 30301
+    - repoURL: https://github.com/zwarder-s-orgranization/hz_chto_viydet.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: secflow-app
+  # Preserve dynamic replica counts managed by orchestrator's Kubernetes API worker scaler.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      namespace: secflow-workers
+      jsonPointers:
+        - /spec/replicas
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

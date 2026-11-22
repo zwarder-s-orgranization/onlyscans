@@ -33,6 +33,22 @@ func remember(access, secret string) {
 	credMu.Unlock()
 }
 
+// SeedCredentials preloads an existing S3 access/secret key pair into memory so
+// Ensure reuses it idempotently (for example when loaded from a Kubernetes Secret).
+func SeedCredentials(access, secret string) {
+	access = strings.TrimSpace(access)
+	secret = strings.TrimSpace(secret)
+	if access == "" || secret == "" {
+		return
+	}
+	remember(access, secret)
+}
+
+// Credentials returns the active Garage endpoint and S3 key pair from env, memory, or cred file.
+func Credentials() (endpoint, access, secret string) {
+	return credentials()
+}
+
 func credPath() string {
 	if p := os.Getenv("GARAGE_CRED_FILE"); p != "" {
 		return p
@@ -99,8 +115,14 @@ func Configured() bool {
 
 func credentials() (endpoint, access, secret string) {
 	endpoint = strings.TrimRight(os.Getenv("GARAGE_ENDPOINT"), "/")
-	access = os.Getenv("GARAGE_ACCESS_KEY")
-	secret = os.Getenv("GARAGE_SECRET_KEY")
+	access = strings.TrimSpace(os.Getenv("GARAGE_ACCESS_KEY"))
+	if access == "" {
+		access = strings.TrimSpace(os.Getenv("GARAGE_ACCESS_KEY_ID"))
+	}
+	secret = strings.TrimSpace(os.Getenv("GARAGE_SECRET_KEY"))
+	if secret == "" {
+		secret = strings.TrimSpace(os.Getenv("GARAGE_SECRET_ACCESS_KEY"))
+	}
 	if access == "" || secret == "" {
 		credMu.Lock()
 		if access == "" {

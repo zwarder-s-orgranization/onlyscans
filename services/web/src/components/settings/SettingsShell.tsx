@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+  Blocks,
   KeyRound,
   Lock,
   Plug,
@@ -10,7 +11,15 @@ import {
   Sparkles,
   User,
 } from "lucide-react";
-import { ApiError, gql, QUERIES } from "@/lib/api";
+import {
+  ApiError,
+  getAiProviderConfig,
+  gql,
+  QUERIES,
+  saveAiProviderConfig,
+  testAiProviderConnection,
+  type AiModelsProbeResponse,
+} from "@/lib/api";
 import { clearSession } from "@/lib/session";
 import {
   INITIAL_AI_CONFIG,
@@ -39,6 +48,7 @@ import { SecretsTab } from "./SecretsTab";
 import { TokensTab } from "./TokensTab";
 import { AiProviderTab } from "./AiProviderTab";
 import { McpServersTab } from "./McpServersTab";
+import { PluginsTab } from "./PluginsTab";
 
 function TabIcon({ id, active }: { id: SettingsTabId; active: boolean }) {
   const cls = `h-4 w-4 shrink-0 stroke-[1.7] ${active ? "text-[#0080ff]" : "text-[#636f7b]"}`;
@@ -53,6 +63,8 @@ function TabIcon({ id, active }: { id: SettingsTabId; active: boolean }) {
       return <Sparkles className={cls} aria-hidden="true" />;
     case "mcp":
       return <Plug className={cls} aria-hidden="true" />;
+    case "plugins":
+      return <Blocks className={cls} aria-hidden="true" />;
   }
 }
 
@@ -165,7 +177,22 @@ export function SettingsShell() {
   const searchParams = useSearchParams();
   const activeTab = normalizeSettingsTab(searchParams.get("tab"));
 
-  const { role, setRole } = useWorkspacePreview();
+  const {
+    role,
+    setRole,
+    backendConnected,
+    pluginPresets,
+    pluginInstallations,
+    livePlugins,
+    declarativeBlueprints,
+    installPlugin,
+    approvePluginInstallation,
+    updatePluginInstallation,
+    setPluginInstallationEnabled,
+    deletePluginInstallation,
+    refreshPluginControlPlane,
+    testDeclarativePlugin,
+  } = useWorkspacePreview();
   const [secrets, setSecrets] = useState<SecretRecord[]>([]);
   const [tokens, setTokens] = useState<ScopedTokenRecord[]>([]);
   const [workflows, setWorkflows] = useState<Array<{ id: string; name: string }>>([]);
@@ -213,10 +240,11 @@ export function SettingsShell() {
     const allowSecrets = canManageSecrets(role);
     const allowTokens = canManageOwnerOnly(role);
 
-    const [baseData, secretsData, tokensData] = await Promise.all([
+    const [baseData, secretsData, tokensData, providerCfg] = await Promise.all([
       gql<SettingsBaseResponse>(QUERIES.settingsBase),
       allowSecrets ? gql<SettingsSecretsResponse>(QUERIES.settingsSecrets) : Promise.resolve(null),
       allowTokens ? gql<SettingsTokensResponse>(QUERIES.settingsTokens) : Promise.resolve(null),
+      getAiProviderConfig().catch(() => null),
     ]);
 
     if (secretsData) {
@@ -255,24 +283,45 @@ export function SettingsShell() {
 
     setWorkflows(baseData.workflows?.items ?? []);
 
-    setAiConfig((prev) => ({
-      ...prev,
-      mode:
-        baseData.aiProviderStatus.providerMode === "OLLAMA"
-          ? "local-ollama"
-          : baseData.aiProviderStatus.providerMode === "CLOUD"
-            ? "openai-compatible"
-            : "deterministic-only",
-      endpointUrl: baseData.aiProviderStatus.endpointHost,
-      model: baseData.aiProviderStatus.modelId,
-      status:
-        baseData.aiProviderStatus.providerMode === "TEMPLATE_FALLBACK"
-          ? "DISABLED"
-          : baseData.aiProviderStatus.healthy
-            ? "HEALTHY"
-            : "DEGRADED",
-      lastCheckedAt: "С сервера",
-    }));
+    if (providerCfg) {
+      setAiConfig({
+        mode: providerCfg.mode,
+        endpointUrl: providerCfg.endpointUrl,
+        model: providerCfg.model,
+        secretRef: providerCfg.secretRef,
+        timeoutSec: providerCfg.timeoutSec || 60,
+        strictGrounding: true,
+        allowTextToWorkflow: providerCfg.allowTextToWorkflow,
+        status: providerCfg.status,
+        lastLatencyMs: providerCfg.lastLatencyMs || 0,
+        lastCheckedAt:
+          providerCfg.lastCheckedAt && providerCfg.lastCheckedAt !== "—"
+            ? new Date(providerCfg.lastCheckedAt).toLocaleString("ru-RU")
+            : "—",
+      });
+    } else {
+      setAiConfig((prev) => ({
+        ...prev,
+        mode:
+          baseData.aiProviderStatus.providerMode === "OLLAMA"
+            ? "local-ollama"
+            : baseData.aiProviderStatus.providerMode === "CLOUD"
+              ? "openai-compatible"
+              : "deterministic-only",
+        endpointUrl:
+          baseData.aiProviderStatus.endpointHost === "local"
+            ? ""
+            : baseData.aiProviderStatus.endpointHost,
+        model: baseData.aiProviderStatus.modelId,
+        status:
+          baseData.aiProviderStatus.providerMode === "TEMPLATE_FALLBACK"
+            ? "DISABLED"
+            : baseData.aiProviderStatus.healthy
+              ? "HEALTHY"
+              : "DEGRADED",
+        lastCheckedAt: "С сервера",
+      }));
+    }
 
     setAiAuditLogs(
       baseData.aiAuditLogs.items.map((item) => ({
@@ -404,20 +453,57 @@ export function SettingsShell() {
 
   // Handlers for AI Provider
   const handleSaveAiConfig = useCallback(
-    (_next: AiProviderConfig) => {
-      void loadSettings().then(() =>
-        showNotice("Режим модели задаётся на сервере. Показан фактический статус."),
-      );
+    async (next: AiProviderConfig) => {
+      const saved = await saveAiProviderConfig({
+        mode: next.mode,
+        endpointUrl: next.endpointUrl,
+        model: next.model,
+        secretRef: next.secretRef,
+        timeoutSec: next.timeoutSec,
+        allowTextToWorkflow: next.allowTextToWorkflow,
+      });
+      setAiConfig({
+        mode: saved.mode,
+        endpointUrl: saved.endpointUrl,
+        model: saved.model,
+        secretRef: saved.secretRef,
+        timeoutSec: saved.timeoutSec,
+        strictGrounding: true,
+        allowTextToWorkflow: saved.allowTextToWorkflow,
+        status: saved.status,
+        lastLatencyMs: saved.lastLatencyMs || 0,
+        lastCheckedAt: new Date(saved.lastCheckedAt || Date.now()).toLocaleString("ru-RU"),
+      });
+      if (saved.errorMessage) {
+        showNotice(`Настройки сохранены, но проверка эндпоинта вернула ошибку: ${saved.errorMessage}`);
+      } else {
+        showNotice("Настройки AI-провайдера сохранены на сервере");
+      }
     },
-    [loadSettings, showNotice],
+    [showNotice],
   );
 
   const handleTestAiConnection = useCallback(
-    async (_candidate: AiProviderConfig) => {
-      await loadSettings();
-      showNotice("Статус AI-провайдера обновлён с сервера");
+    async (candidate: AiProviderConfig): Promise<AiModelsProbeResponse | null> => {
+      try {
+        const res = await testAiProviderConnection({
+          mode: candidate.mode,
+          endpointUrl: candidate.endpointUrl,
+          model: candidate.model,
+          secretRef: candidate.secretRef,
+        });
+        if (res.ok) {
+          showNotice(`Подключение подтверждено (${res.latencyMs} мс, моделей: ${res.models.length})`);
+        } else {
+          showNotice(res.error || "AI-провайдер не ответил");
+        }
+        return res;
+      } catch (err: unknown) {
+        showNotice(err instanceof Error ? err.message : "Ошибка проверки соединения");
+        return null;
+      }
     },
-    [loadSettings, showNotice],
+    [showNotice],
   );
 
   // Handlers for MCP Connections
@@ -574,6 +660,8 @@ export function SettingsShell() {
           : null;
       case "mcp":
         return String(mcpConnections.length);
+      case "plugins":
+        return String(pluginInstallations.filter((p) => p.status === "ACTIVE").length);
       default:
         return null;
     }
@@ -603,6 +691,7 @@ export function SettingsShell() {
         >
           {SETTINGS_TABS.map((tab) => {
             const active = activeTab === tab.id;
+            const badge = getTabMetaBadge(tab.id);
             return (
               <button
                 key={tab.id}
@@ -618,6 +707,11 @@ export function SettingsShell() {
               >
                 <TabIcon id={tab.id} active={active} />
                 <span>{tab.shortLabel}</span>
+                {tab.id === "plugins" && badge !== null && (
+                  <span className="fm-tnum rounded-full border border-[#8c9baa]/50 bg-[#ffffff] px-1.5 py-0.5 text-[11px] font-semibold leading-none text-[#636f7b]">
+                    {badge}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -629,7 +723,7 @@ export function SettingsShell() {
         {/* Desktop left sidebar */}
         <aside
           aria-label="Навигация настроек"
-          className="hidden w-[236px] shrink-0 border-r border-[#8c9baa]/45 bg-[#ffffff] py-5 pr-3 pl-4 md:block lg:pl-6"
+          className="hidden w-[260px] shrink-0 border-r border-[#8c9baa]/45 bg-[#ffffff] py-5 pr-3 pl-4 md:block lg:pl-6"
         >
           <nav className="sticky top-[72px] flex flex-col gap-1">
             {SETTINGS_TABS.map((tab) => {
@@ -721,6 +815,26 @@ export function SettingsShell() {
               onTestConnection={handleTestMcp}
               onExpandTools={handleLoadMcpTools}
               onDeleteConnection={handleDeleteMcp}
+            />
+          )}
+
+          {activeTab === "plugins" && (
+            <PluginsTab
+              role={role}
+              backendConnected={backendConnected}
+              presets={pluginPresets}
+              installations={pluginInstallations}
+              livePlugins={livePlugins}
+              declarativeBlueprints={declarativeBlueprints}
+              secrets={secrets}
+              onInstallPlugin={installPlugin}
+              onApproveInstallation={approvePluginInstallation}
+              onUpdateInstallation={updatePluginInstallation}
+              onSetEnabled={setPluginInstallationEnabled}
+              onDeleteInstallation={deletePluginInstallation}
+              onTestDeclarativePlugin={testDeclarativePlugin}
+              onRefresh={refreshPluginControlPlane}
+              onNotice={showNotice}
             />
           )}
         </main>

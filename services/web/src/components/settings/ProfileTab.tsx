@@ -6,6 +6,7 @@ import { ROLE_LABELS, type UserRole } from "@/data/workflows-workspace-data";
 import { useWorkspacePreview } from "@/components/workspace/WorkspacePreviewContext";
 import { RBAC_MATRIX } from "@/data/settings-data";
 import { clearSession, readSession, type Session } from "@/lib/session";
+import { UserAvatar } from "./UserAvatar";
 
 interface ProfileTabProps {
   role: UserRole;
@@ -50,14 +51,6 @@ export function ProfileTab({ role, onChangeRole, onNotice, onLogout }: ProfileTa
     setSessionInfo(readSession());
   }, [accountEmail, role]);
 
-  const initials = displayName
-    .trim()
-    .split(/\s+/)
-    .map((part) => part[0] ?? "")
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-
   const handleSaveProfile = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const cleanName = displayName.trim();
@@ -96,7 +89,7 @@ export function ProfileTab({ role, onChangeRole, onNotice, onLogout }: ProfileTa
             Профиль пользователя
           </h1>
           <p className="mt-1 text-[14px] text-[#636f7b]">
-            Учётные данные, активная роль RBAC и параметры сессии SecFlow.
+            Учётные данные, активная роль RBAC и параметры сессии onlyscans.
           </p>
         </div>
 
@@ -131,12 +124,11 @@ export function ProfileTab({ role, onChangeRole, onNotice, onLogout }: ProfileTa
           className="mt-3 rounded-[16px] border border-[#8c9baa]/55 bg-[#ffffff] p-5"
         >
           <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
-            <div
-              aria-hidden="true"
-              className="inline-flex h-16 w-16 shrink-0 items-center justify-center rounded-full border border-[#8c9baa] bg-[#f6faff] text-[18px] font-bold tracking-[-0.02em] text-[#000000]"
-            >
-              {initials || "SF"}
-            </div>
+            <UserAvatar
+              seed={accountEmail || displayName}
+              size={64}
+              className="ring-1 ring-[#8c9baa]/50"
+            />
 
             <div className="grid min-w-0 flex-1 gap-4 sm:grid-cols-2">
               <div className="min-w-0">

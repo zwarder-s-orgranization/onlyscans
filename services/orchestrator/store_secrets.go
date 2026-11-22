@@ -23,6 +23,7 @@ import (
 	secflowv1 "github.com/secflow/secflow/packages/proto/gen/go/secflow/v1"
 	"github.com/secflow/secflow/services/internal/engine"
 	"github.com/secflow/secflow/services/internal/lease"
+	"github.com/secflow/secflow/services/internal/manifest"
 	"github.com/secflow/secflow/services/internal/secretbox"
 )
 
@@ -313,6 +314,56 @@ func (s *Server) validServiceToken(got string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(s.serviceTK)) == 1
 }
 
+func (s *Server) mayIssueTaskLease(pluginID string, m *secflowv1.PluginManifest) bool {
+	if s.isAnalyzerPlugin(pluginID) || pluginID == "sbom.generate" {
+		return false
+	}
+	if m == nil {
+		// Fail closed unless pluginID is a known built-in non-analyzer plugin.
+		builtin, ok := manifest.LookupBuiltin(pluginID)
+		if !ok {
+			return false
+		}
+		return builtin.Category != secflowv1.PluginCategory_PLUGIN_CATEGORY_ANALYZER &&
+			builtin.SandboxProfile != secflowv1.SandboxProfile_SANDBOX_PROFILE_INTERNAL_ONLY
+	}
+	if m.GetCategory() == secflowv1.PluginCategory_PLUGIN_CATEGORY_ANALYZER ||
+		m.GetSandboxProfile() == secflowv1.SandboxProfile_SANDBOX_PROFILE_INTERNAL_ONLY {
+		return false
+	}
+	if !m.GetIsExternal() {
+		return true
+	}
+	return s.externalActionSecretEligible(pluginID, m)
+}
+
+func (s *Server) externalActionSecretEligible(pluginID string, m *secflowv1.PluginManifest) bool {
+	if m == nil || !m.GetIsExternal() {
+		return false
+	}
+	if m.GetCategory() != secflowv1.PluginCategory_PLUGIN_CATEGORY_ACTION ||
+		m.GetSandboxProfile() != secflowv1.SandboxProfile_SANDBOX_PROFILE_EGRESS_EXTERNAL {
+		return false
+	}
+	if len(m.GetRequiredSecretKeys()) == 0 {
+		return false
+	}
+	s.plugMu.Lock()
+	defer s.plugMu.Unlock()
+	instID := s.pluginInstallation[pluginOwnerKey(pluginID)]
+	if instID == "" {
+		// Standalone non-installation external worker registered with SERVICE_TOKEN in tests.
+		return !s.pluginDisabled[pluginID] && s.pluginApprovalState[pluginID] != approvalStatePending
+	}
+	rec := s.installations[instID]
+	if rec == nil || rec.proto == nil {
+		return false
+	}
+	return rec.proto.GetStatus() == secflowv1.PluginInstallationStatus_PLUGIN_INSTALLATION_STATUS_ACTIVE &&
+		rec.proto.GetSandboxProfile() == secflowv1.SandboxProfile_SANDBOX_PROFILE_EGRESS_EXTERNAL &&
+		!s.pluginDisabled[pluginID]
+}
+
 func (s *Server) authorizeSecret(req *secflowv1.ResolveScopedSecretRequest) error {
 	switch scope := req.GetScope().(type) {
 	case *secflowv1.ResolveScopedSecretRequest_NodeTask:
@@ -321,11 +372,32 @@ func (s *Server) authorizeSecret(req *secflowv1.ResolveScopedSecretRequest) erro
 			slog.Warn("secret scope denied: forbidden plugin", "plugin_id", n.GetPluginId(), "secret_ref", req.GetSecretRef())
 			return status.Error(codes.PermissionDenied, "SECRET_SCOPE_DENIED")
 		}
+		plugManifest := s.pluginManifestSnapshot(n.GetPluginId())
+		if plugManifest == nil {
+			builtin, ok := manifest.LookupBuiltin(n.GetPluginId())
+			if !ok ||
+				builtin.Category == secflowv1.PluginCategory_PLUGIN_CATEGORY_ANALYZER ||
+				builtin.SandboxProfile == secflowv1.SandboxProfile_SANDBOX_PROFILE_INTERNAL_ONLY {
+				return status.Error(codes.PermissionDenied, "SECRET_SCOPE_DENIED")
+			}
+		} else {
+			if plugManifest.GetCategory() == secflowv1.PluginCategory_PLUGIN_CATEGORY_ANALYZER ||
+				plugManifest.GetSandboxProfile() == secflowv1.SandboxProfile_SANDBOX_PROFILE_INTERNAL_ONLY {
+				return status.Error(codes.PermissionDenied, "SECRET_SCOPE_DENIED")
+			}
+			if plugManifest.GetIsExternal() && !s.externalActionSecretEligible(n.GetPluginId(), plugManifest) {
+				return status.Error(codes.PermissionDenied, "SECRET_SCOPE_DENIED")
+			}
+		}
 		if err := lease.Verify(s.leaseKey, n.GetTaskLeaseToken(), n.GetRunId(), n.GetNodeRunId(), n.GetNodeId(), n.GetPluginId()); err != nil {
 			slog.Warn("secret scope denied: lease verify failed", "run_id", n.GetRunId(), "node_id", n.GetNodeId(), "plugin_id", n.GetPluginId(), "err", err)
 			return status.Error(codes.PermissionDenied, "SECRET_SCOPE_DENIED")
 		}
-		if !s.nodeHasSecret(n.GetRunId(), n.GetNodeId(), req.GetSecretRef()) {
+		if plugManifest != nil && plugManifest.GetIsExternal() {
+			if !s.nodeHasDeclaredSecret(n.GetRunId(), n.GetNodeId(), req.GetSecretRef(), plugManifest.GetRequiredSecretKeys()) {
+				return status.Error(codes.PermissionDenied, "SECRET_SCOPE_DENIED")
+			}
+		} else if !s.nodeHasSecret(n.GetRunId(), n.GetNodeId(), req.GetSecretRef()) {
 			if n.GetPluginId() != "mcp.tool" || !s.nodeHasMcpSecret(n.GetRunId(), n.GetNodeId(), req.GetSecretRef()) {
 				slog.Warn("secret scope denied: node does not bind secret", "run_id", n.GetRunId(), "node_id", n.GetNodeId(), "plugin_id", n.GetPluginId(), "secret_ref", req.GetSecretRef())
 				return status.Error(codes.PermissionDenied, "SECRET_SCOPE_DENIED")
@@ -347,8 +419,17 @@ func (s *Server) authorizeSecret(req *secflowv1.ResolveScopedSecretRequest) erro
 		}
 	case *secflowv1.ResolveScopedSecretRequest_McpDiscovery:
 		m := scope.McpDiscovery
-		if m == nil || !s.validServiceToken(req.GetServiceToken()) ||
-			m.GetMcpConnectionId() == "" || !s.mcpSecret(m.GetMcpConnectionId(), req.GetSecretRef()) {
+		if m == nil || !s.validServiceToken(req.GetServiceToken()) || m.GetMcpConnectionId() == "" {
+			return status.Error(codes.PermissionDenied, "SECRET_SCOPE_DENIED")
+		}
+		if m.GetMcpConnectionId() == "__ai_provider__" {
+			if !s.aiProviderSecret(req.GetSecretRef()) {
+				slog.Warn("secret scope denied: secret kind not allowed for ai provider", "secret_ref", req.GetSecretRef())
+				return status.Error(codes.PermissionDenied, "SECRET_SCOPE_DENIED")
+			}
+			return nil
+		}
+		if !s.mcpSecret(m.GetMcpConnectionId(), req.GetSecretRef()) {
 			return status.Error(codes.PermissionDenied, "SECRET_SCOPE_DENIED")
 		}
 	default:
@@ -413,6 +494,37 @@ func (s *Server) nodeHasSecret(runID, nodeID, secretRef string) bool {
 	return false
 }
 
+func (s *Server) nodeHasDeclaredSecret(runID, nodeID, secretRef string, declaredKeys []string) bool {
+	if secretRef == "" || len(declaredKeys) == 0 {
+		return false
+	}
+	wfID := s.workflowIDForRun(runID)
+	if wfID == "" {
+		return false
+	}
+	wf := s.mustWorkflow(wfID)
+	if wf == nil || wf.GetGraph() == nil {
+		return false
+	}
+	allowed := make(map[string]bool, len(declaredKeys))
+	for _, k := range declaredKeys {
+		if trimmed := strings.TrimSpace(k); trimmed != "" {
+			allowed[trimmed] = true
+		}
+	}
+	for _, n := range wf.GetGraph().GetNodes() {
+		if n.GetId() != nodeID {
+			continue
+		}
+		for _, b := range n.GetSecretBindings() {
+			if b.GetSecretRef() == secretRef && allowed[b.GetParamKey()] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (s *Server) nodeHasMcpSecret(runID, nodeID, secretRef string) bool {
 	if secretRef == "" {
 		return false
@@ -451,6 +563,20 @@ func (s *Server) mcpSecret(connectionID, secretRef string) bool {
 	defer s.mcpMu.Unlock()
 	conn := s.mcps[connectionID]
 	return conn != nil && conn.GetConfig().GetAuthSecretRef() != "" && conn.GetConfig().GetAuthSecretRef() == secretRef
+}
+
+func (s *Server) aiProviderSecret(secretRef string) bool {
+	if secretRef == "" {
+		return false
+	}
+	s.secMu.Lock()
+	sec := s.secrets[secretRef]
+	s.secMu.Unlock()
+	if sec == nil || sec.meta == nil {
+		return false
+	}
+	k := sec.meta.GetKind()
+	return k == secflowv1.SecretKind_SECRET_KIND_LLM_API_KEY || k == secflowv1.SecretKind_SECRET_KIND_GENERIC
 }
 
 func (s *Server) bindingForNode(workflowID, nodeID, plugin, param, secretRef string) bool {

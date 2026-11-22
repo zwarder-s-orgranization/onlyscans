@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -12,15 +15,43 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	otelcodes "go.opentelemetry.io/otel/codes"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	secflowv1 "github.com/secflow/secflow/packages/proto/gen/go/secflow/v1"
 	"github.com/secflow/secflow/services/internal/envutil"
 	"github.com/secflow/secflow/services/internal/obs"
 )
 
-// ErrManifestRejected is returned when orchestrator permanently rejects a Plugin manifest.
-var ErrManifestRejected = errors.New("manifest rejected")
+var (
+	// ErrManifestRejected is returned when orchestrator permanently rejects a Plugin manifest.
+	ErrManifestRejected = errors.New("manifest rejected")
+	// ErrUnauthenticated is returned when orchestrator rejects worker credentials (UNAUTHENTICATED).
+	ErrUnauthenticated = errors.New("worker unauthenticated")
+	// ErrPermissionDenied is returned when orchestrator denies worker registration or installation state (PERMISSION_DENIED).
+	ErrPermissionDenied = errors.New("worker permission denied")
+)
+
+const (
+	pluginTokenMetadataKey  = "x-plugin-token"
+	serviceTokenMetadataKey = "x-service-token"
+)
+
+// Config configures a pull worker stream connection to orchestrator.
+type Config struct {
+	Addr             string
+	WorkerID         string
+	Namespace        string
+	PluginToken      string
+	ServiceToken     string
+	Manifests        []*secflowv1.PluginManifest
+	Handle           Handler
+	InitialBackoff   time.Duration
+	MaxBackoff       time.Duration
+	DefaultHeartbeat time.Duration
+}
 
 // Handler turns a leased task into a result. Secret values must not be logged.
 type Handler func(ctx context.Context, task *secflowv1.NodeTask) *secflowv1.NodeResult
@@ -67,12 +98,26 @@ func (s *streamSender) CloseSend() error {
 
 // Run dials the orchestrator and keeps the pull stream open with exponential backoff.
 func Run(ctx context.Context, addr, workerID string, manifests []*secflowv1.PluginManifest, handle Handler) error {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()), obs.GRPCDialOption())
+	return RunWithConfig(ctx, Config{
+		Addr:         addr,
+		WorkerID:     workerID,
+		Namespace:    envutil.Get("POD_NAMESPACE", "secflow-workers"),
+		PluginToken:  strings.TrimSpace(os.Getenv("PLUGIN_TOKEN")),
+		ServiceToken: strings.TrimSpace(os.Getenv("SERVICE_TOKEN")),
+		Manifests:    manifests,
+		Handle:       handle,
+	})
+}
+
+// RunWithConfig dials the orchestrator using cfg and keeps the pull stream open until
+// ctx cancellation, graceful DrainRequest completion, or a permanent rejection/auth error.
+func RunWithConfig(ctx context.Context, cfg Config) error {
+	conn, err := grpc.NewClient(cfg.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()), obs.GRPCDialOption())
 	if err != nil {
-		return fmt.Errorf("dial orchestrator %s: %w", addr, err)
+		return fmt.Errorf("dial orchestrator %s: %w", cfg.Addr, err)
 	}
-	defer conn.Close()
-	return runClient(ctx, secflowv1.NewWorkerServiceClient(conn), workerID, manifests, handle, 250*time.Millisecond, 30*time.Second)
+	defer func() { _ = conn.Close() }()
+	return runClientWithConfig(ctx, secflowv1.NewWorkerServiceClient(conn), cfg)
 }
 
 func runClient(
@@ -97,8 +142,49 @@ func runClientWithHeartbeat(
 	maxBackoff time.Duration,
 	defaultHeartbeat time.Duration,
 ) error {
+	return runClientWithConfig(ctx, client, Config{
+		WorkerID:         workerID,
+		Namespace:        envutil.Get("POD_NAMESPACE", "secflow-workers"),
+		PluginToken:      strings.TrimSpace(os.Getenv("PLUGIN_TOKEN")),
+		ServiceToken:     strings.TrimSpace(os.Getenv("SERVICE_TOKEN")),
+		Manifests:        manifests,
+		Handle:           handle,
+		InitialBackoff:   initialBackoff,
+		MaxBackoff:       maxBackoff,
+		DefaultHeartbeat: defaultHeartbeat,
+	})
+}
+
+func connectContext(ctx context.Context, pluginToken, serviceToken string) context.Context {
+	if tok := strings.TrimSpace(pluginToken); tok != "" {
+		return metadata.AppendToOutgoingContext(ctx, pluginTokenMetadataKey, tok)
+	}
+	if tok := strings.TrimSpace(serviceToken); tok != "" {
+		return metadata.AppendToOutgoingContext(ctx, serviceTokenMetadataKey, tok)
+	}
+	return ctx
+}
+
+func classifyPermanentStreamError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrManifestRejected) || errors.Is(err, ErrUnauthenticated) || errors.Is(err, ErrPermissionDenied) {
+		return err
+	}
+	switch status.Code(err) {
+	case codes.Unauthenticated:
+		return fmt.Errorf("%w: %w", ErrUnauthenticated, err)
+	case codes.PermissionDenied:
+		return fmt.Errorf("%w: %w", ErrPermissionDenied, err)
+	default:
+		return nil
+	}
+}
+
+func runClientWithConfig(ctx context.Context, client secflowv1.WorkerServiceClient, cfg Config) error {
 	var maxConcurrency int32
-	for _, m := range manifests {
+	for _, m := range cfg.Manifests {
 		if m != nil && m.GetMaxConcurrency() > 0 {
 			maxConcurrency += m.GetMaxConcurrency()
 		}
@@ -106,15 +192,34 @@ func runClientWithHeartbeat(
 	if maxConcurrency <= 0 {
 		maxConcurrency = 4
 	}
-	namespace := envutil.Get("POD_NAMESPACE", "secflow-workers")
+	namespace := strings.TrimSpace(cfg.Namespace)
+	if namespace == "" {
+		namespace = envutil.Get("POD_NAMESPACE", "secflow-workers")
+	}
+	initialBackoff := cfg.InitialBackoff
+	if initialBackoff <= 0 {
+		initialBackoff = 250 * time.Millisecond
+	}
+	maxBackoff := cfg.MaxBackoff
+	if maxBackoff <= 0 {
+		maxBackoff = 30 * time.Second
+	}
+	defaultHeartbeat := cfg.DefaultHeartbeat
+	if defaultHeartbeat <= 0 {
+		defaultHeartbeat = 10 * time.Second
+	}
 	backoff := initialBackoff
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		stream, err := client.Connect(ctx)
+		streamCtx := connectContext(ctx, cfg.PluginToken, cfg.ServiceToken)
+		stream, err := client.Connect(streamCtx)
 		if err != nil {
-			slog.Warn("worker connect failed", "worker_id", workerID, "err", err)
+			if perm := classifyPermanentStreamError(err); perm != nil {
+				return perm
+			}
+			slog.Warn("worker connect failed", "worker_id", cfg.WorkerID, "err", err)
 			if err := sleepWithContext(ctx, backoff); err != nil {
 				return err
 			}
@@ -124,30 +229,40 @@ func runClientWithHeartbeat(
 		sender := &streamSender{stream: stream}
 		err = sender.Send(&secflowv1.ConnectRequest{Payload: &secflowv1.ConnectRequest_RegisterManifest{
 			RegisterManifest: &secflowv1.WorkerRegisterManifest{
-				WorkerInstanceId: workerID,
+				WorkerInstanceId: cfg.WorkerID,
 				Namespace:        namespace,
-				Manifests:        manifests,
+				Manifests:        cfg.Manifests,
 			},
 		}})
 		if err != nil {
-			slog.Warn("worker register manifest failed", "worker_id", workerID, "err", err)
+			if errors.Is(err, io.EOF) {
+				if _, recvErr := stream.Recv(); recvErr != nil {
+					if perm := classifyPermanentStreamError(recvErr); perm != nil {
+						return perm
+					}
+					err = recvErr
+				}
+			} else if perm := classifyPermanentStreamError(err); perm != nil {
+				return perm
+			}
+			slog.Warn("worker register manifest failed", "worker_id", cfg.WorkerID, "err", err)
 			if err := sleepWithContext(ctx, backoff); err != nil {
 				return err
 			}
 			backoff = nextBackoff(backoff, maxBackoff)
 			continue
 		}
-		accepted, drained, err := serve(ctx, stream, sender, workerID, maxConcurrency, defaultHeartbeat, handle)
+		accepted, drained, err := serve(ctx, stream, sender, cfg.WorkerID, maxConcurrency, defaultHeartbeat, cfg.Handle)
 		if drained {
 			return nil
 		}
-		if errors.Is(err, ErrManifestRejected) {
-			return err
+		if perm := classifyPermanentStreamError(err); perm != nil {
+			return perm
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		slog.Info("worker stream closed", "worker_id", workerID, "err", err)
+		slog.Info("worker stream closed", "worker_id", cfg.WorkerID, "err", err)
 		if accepted {
 			backoff = initialBackoff
 		}
@@ -240,8 +355,15 @@ func serve(
 		switch p := msg.GetPayload().(type) {
 		case *secflowv1.ConnectResponse_ManifestAck:
 			if !p.ManifestAck.GetAccepted() {
-				slog.Error("manifest rejected", "reason", p.ManifestAck.GetRejectionReason())
-				return false, false, fmt.Errorf("%w: %s", ErrManifestRejected, p.ManifestAck.GetRejectionReason())
+				slog.Error("manifest rejected", "code", p.ManifestAck.GetRejectionCode().String(), "reason", p.ManifestAck.GetRejectionReason())
+				switch p.ManifestAck.GetRejectionCode() {
+				case secflowv1.ManifestRejectionCode_MANIFEST_REJECTION_CODE_UNAUTHENTICATED:
+					return false, false, fmt.Errorf("%w (%w): %s", ErrManifestRejected, ErrUnauthenticated, p.ManifestAck.GetRejectionReason())
+				case secflowv1.ManifestRejectionCode_MANIFEST_REJECTION_CODE_BUILTIN_OVERRIDE_FORBIDDEN:
+					return false, false, fmt.Errorf("%w (%w): %s", ErrManifestRejected, ErrPermissionDenied, p.ManifestAck.GetRejectionReason())
+				default:
+					return false, false, fmt.Errorf("%w: %s", ErrManifestRejected, p.ManifestAck.GetRejectionReason())
+				}
 			}
 			accepted = true
 			interval := defaultHeartbeat

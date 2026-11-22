@@ -104,3 +104,74 @@ func TestCheckFailsClosedWhenSchemaUnavailable(t *testing.T) {
 		}
 	})
 }
+
+func TestCheckSchemaExternalPlugin(t *testing.T) {
+	t.Parallel()
+	raw := []byte(`{
+		"type": "object",
+		"additionalProperties": false,
+		"required": ["blockThreshold", "mode"],
+		"properties": {
+			"blockThreshold": {"type": "integer", "minimum": 1},
+			"mode": {"type": "string", "enum": ["strict", "balanced"]},
+			"tags": {"type": "array", "items": {"type": "string"}}
+		}
+	}`)
+
+	tests := []struct {
+		name    string
+		schema  []byte
+		params  map[string]any
+		wantErr string
+	}{
+		{
+			name:   "valid external params pass",
+			schema: raw,
+			params: map[string]any{"blockThreshold": 10, "mode": "strict", "tags": []any{"prod"}},
+		},
+		{
+			name:    "missing required field fails",
+			schema:  raw,
+			params:  map[string]any{"mode": "strict"},
+			wantErr: "нет поля blockThreshold",
+		},
+		{
+			name:    "invalid enum value fails",
+			schema:  raw,
+			params:  map[string]any{"blockThreshold": 5, "mode": "loose"},
+			wantErr: "значение вне enum",
+		},
+		{
+			name:    "extra field rejected when additionalProperties false",
+			schema:  raw,
+			params:  map[string]any{"blockThreshold": 5, "mode": "strict", "secret": "inline"},
+			wantErr: "лишнее поле secret",
+		},
+		{
+			name:   "empty schema passes",
+			schema: nil,
+			params: map[string]any{"anything": "ok"},
+		},
+		{
+			name:    "malformed schema json fails",
+			schema:  []byte(`{not-json`),
+			params:  map[string]any{},
+			wantErr: "parse external param schema",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := CheckSchema("logic.risk-router", tt.schema, tt.params)
+			if tt.wantErr == "" && err != nil {
+				t.Fatalf("CheckSchema() unexpected error: %v", err)
+			}
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("CheckSchema() err = %v, want substring %q", err, tt.wantErr)
+				}
+			}
+		})
+	}
+}

@@ -1,0 +1,44 @@
+# Preset tuned for local Kubernetes clusters (kind, minikube, Docker Desktop Kubernetes).
+# Usage:
+#   helm upgrade --install onlyscans deploy/charts/onlyscans -f deploy/charts/onlyscans/values-local-k8s.yaml
+
+global:
+  env: development
+  imageRegistry: onlyscans
+  imageTag: local
+  imagePullPolicy: IfNotPresent
+  storageClassName: ""
+  publicUrl: "http://localhost:30080"
+  corsAllowOrigins: "http://localhost:30080,http://127.0.0.1:30080,http://localhost:3000"
+
+orchestrator:
+  replicas: 1
+  pdb:
+    enabled: false
+
+edgeGateway:
+  replicas: 1
+  pdb:
+    enabled: false
+
+web:
+  replicas: 1
+
+workerScaling:
+  mode: orchestrator
+  precreatePureWorkers: false
+  idleTtlSeconds: 60
+  defaultMaxReplicas: 4
+
+pluginProvisioner:
+  enabled: true
+  driver: k8s
+  imageRegistryAllowlist: "ghcr.io/zwarder-s-orgranization/onlyscans,onlyscans,ghcr.io/secflow"
+
+ingress:
+  enabled: true
+  className: nginx
+  host: onlyscans.localhost
+
+networkPolicies:
+  enabled: true

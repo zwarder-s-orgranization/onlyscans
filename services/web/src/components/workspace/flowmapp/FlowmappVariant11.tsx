@@ -29,6 +29,7 @@ import {
 import { FlowmappCanvas11 } from "./FlowmappCanvas11";
 import { FlowmappRunHistoryView } from "./FlowmappRunHistoryView";
 import { FlowmappTemplatesView } from "./FlowmappTemplatesView";
+import type { StarterTemplateRecord } from "@/data/workflows-workspace-data";
 import {
   FlowmappEmptyState,
   FlowmappHeader,
@@ -98,6 +99,7 @@ export function FlowmappVariant11() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [createTab, setCreateTab] = useState<CreateModalTab>("blank");
+  const [templateForCreate, setTemplateForCreate] = useState<StarterTemplateRecord | null>(null);
   const [descTooltip, setDescTooltip] = useState<{
     text: string;
     x: number;
@@ -152,6 +154,7 @@ export function FlowmappVariant11() {
     AI_TEXT_PRESETS.find((item) => item.id === selectedPresetId) ?? AI_TEXT_PRESETS[0];
 
   const openCreateModal = (initialTab: CreateModalTab = "blank") => {
+    setTemplateForCreate(null);
     setCreateTab(initialTab);
     setAiPreview(null);
     setAiPreviewError(null);
@@ -195,6 +198,17 @@ export function FlowmappVariant11() {
   const handleCreateBlankSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!ws.canEdit) return;
+    if (templateForCreate) {
+      ws.createFromTemplate(
+        templateForCreate,
+        true,
+        newBoardName.trim() || templateForCreate.name,
+      );
+      setNewBoardName("");
+      setTemplateForCreate(null);
+      setCreateModalOpen(false);
+      return;
+    }
     ws.createBlankWorkflow({
       name: newBoardName.trim() || undefined,
       trigger: newBoardTrigger,
@@ -325,11 +339,12 @@ export function FlowmappVariant11() {
           templates={ws.templates}
           workflows={ws.workflows}
           canEdit={ws.canEdit}
-          onUseTemplate={(tpl, openCanvas = true, customName) => {
-            ws.createFromTemplate(tpl, openCanvas, customName);
-            if (!openCanvas) {
-              setActiveSection("workflows");
-            }
+          onUseTemplate={(tpl) => {
+            setTemplateForCreate(tpl);
+            setNewBoardName(tpl.name);
+            setNewBoardTrigger(tpl.trigger);
+            setCreateTab("blank");
+            setCreateModalOpen(true);
           }}
           onPublishTemplate={ws.publishTemplate}
           onNotice={ws.showNotice}
@@ -841,22 +856,27 @@ export function FlowmappVariant11() {
             <div className="flex items-center justify-between gap-3 border-b border-[#8c9baa]/40 px-5 py-4">
               <h2
                 id="v11-create-modal-title"
-                className="text-[18px] font-bold tracking-[-0.025em] text-[#000000]"
+                className="min-w-0 text-[18px] font-bold tracking-[-0.025em] text-[#000000]"
               >
-                Новая доска Workflow
+                {templateForCreate
+                  ? `Новая доска из шаблона «${templateForCreate.name}»`
+                  : "Новая доска Workflow"}
               </h2>
               <button
                 type="button"
                 onClick={() => setCreateModalOpen(false)}
                 aria-label="Закрыть окно создания доски"
-                className="fm-focus inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-[#8c9baa]/70 text-[#222222] transition-colors hover:border-[#000000]"
+                className="fm-focus inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full border border-[#8c9baa]/70 text-[#222222] transition-colors hover:border-[#000000]"
               >
                 <X className="h-4 w-4 stroke-[1.7]" aria-hidden="true" />
               </button>
             </div>
 
             {/* Creation Method Tabs */}
-            <div className="border-b border-[#8c9baa]/35 px-5 py-3">
+            <div
+              hidden={Boolean(templateForCreate)}
+              className="border-b border-[#8c9baa]/35 px-5 py-3"
+            >
               <div
                 role="tablist"
                 aria-label="Способ создания доски"
@@ -935,7 +955,7 @@ export function FlowmappVariant11() {
                     />
                   </div>
 
-                  <div>
+                  <div hidden={Boolean(templateForCreate)}>
                     <p className="text-[13px] font-semibold text-[#000000]">Стартовый триггер</p>
                     <div
                       role="group"

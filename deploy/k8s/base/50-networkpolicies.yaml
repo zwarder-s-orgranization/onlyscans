@@ -1,0 +1,302 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: secflow-workers
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-internal-only-workers
+  namespace: secflow-workers
+spec:
+  podSelector:
+    matchLabels:
+      secflow.io/egress-tier: internal-only
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-app
+          podSelector:
+            matchLabels:
+              app: orchestrator
+      ports:
+        - protocol: TCP
+          port: 50051
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-system
+          podSelector:
+            matchLabels:
+              app: garage
+      ports:
+        - protocol: TCP
+          port: 3900
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-observability
+          podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4318
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-external-workers
+  namespace: secflow-workers
+spec:
+  podSelector:
+    matchLabels:
+      secflow.io/egress-tier: egress-external
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-app
+          podSelector:
+            matchLabels:
+              app: edge-gateway
+      ports:
+        - protocol: TCP
+          port: 50053
+        - protocol: TCP
+          port: 50054
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-app
+          podSelector:
+            matchLabels:
+              app: orchestrator
+      ports:
+        - protocol: TCP
+          port: 50054
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-observability
+          podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 8086
+        - protocol: TCP
+          port: 8087
+        - protocol: TCP
+          port: 8088
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-app
+          podSelector:
+            matchLabels:
+              app: orchestrator
+      ports:
+        - protocol: TCP
+          port: 50051
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-app
+          podSelector:
+            matchLabels:
+              app: edge-gateway
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-system
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 3900
+        - protocol: TCP
+          port: 11434
+        - protocol: TCP
+          port: 1025
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 587
+        - protocol: TCP
+          port: 465
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: secflow-sandbox
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-declarative-runtime-internal
+  namespace: secflow-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      secflow.io/declarative-runtime: internal
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-app
+          podSelector:
+            matchLabels:
+              app: orchestrator
+      ports:
+        - protocol: TCP
+          port: 50051
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-system
+          podSelector:
+            matchLabels:
+              app: garage
+      ports:
+        - protocol: TCP
+          port: 3900
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-observability
+          podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4318
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-declarative-runtime-action
+  namespace: secflow-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      secflow.io/declarative-runtime: action
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-app
+          podSelector:
+            matchLabels:
+              app: orchestrator
+      ports:
+        - protocol: TCP
+          port: 50051
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-observability
+          podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4318
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 127.0.0.0/8
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: restrict-system-ingress
+  namespace: secflow-system
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-app
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-workers
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-sandbox
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: secflow-system

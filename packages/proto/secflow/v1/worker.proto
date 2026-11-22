@@ -35,6 +35,25 @@ service PluginRegistryService {
   // Server-stream emitting REGISTERED / UPDATED / OFFLINE events so UI palette
   // updates in real time without restarting edge-gateway, orchestrator, or web.
   rpc WatchPlugins(WatchPluginsRequest) returns (stream WatchPluginsResponse);
+
+  // Plugin Installation control plane (ADR-0010, Ticket #28).
+  rpc ListPluginInstallations(ListPluginInstallationsRequest) returns (ListPluginInstallationsResponse);
+  rpc GetPluginInstallation(GetPluginInstallationRequest) returns (GetPluginInstallationResponse);
+  rpc ListPluginPresets(ListPluginPresetsRequest) returns (ListPluginPresetsResponse);
+  rpc InstallPlugin(InstallPluginRequest) returns (InstallPluginResponse);
+  rpc ApprovePluginInstallation(ApprovePluginInstallationRequest) returns (ApprovePluginInstallationResponse);
+  rpc UpdatePluginInstallation(UpdatePluginInstallationRequest) returns (UpdatePluginInstallationResponse);
+  rpc SetPluginInstallationEnabled(SetPluginInstallationEnabledRequest) returns (SetPluginInstallationEnabledResponse);
+  rpc DeletePluginInstallation(DeletePluginInstallationRequest) returns (DeletePluginInstallationResponse);
+  rpc WatchPluginInstallations(WatchPluginInstallationsRequest) returns (stream WatchPluginInstallationsResponse);
+
+  // Declarative Plugin Builder & Saved Nodes (ADR-0011, Spec #33).
+  rpc TestDeclarativePlugin(TestDeclarativePluginRequest) returns (TestDeclarativePluginResponse);
+  rpc ListDeclarativeSpecs(ListDeclarativeSpecsRequest) returns (ListDeclarativeSpecsResponse);
+  rpc ListSavedNodes(ListSavedNodesRequest) returns (ListSavedNodesResponse);
+  rpc SaveNode(SaveNodeRequest) returns (SaveNodeResponse);
+  rpc UpdateSavedNode(UpdateSavedNodeRequest) returns (UpdateSavedNodeResponse);
+  rpc DeleteSavedNode(DeleteSavedNodeRequest) returns (DeleteSavedNodeResponse);
 }
 
 enum SandboxProfile {
@@ -50,6 +69,10 @@ enum ManifestRejectionCode {
   MANIFEST_REJECTION_CODE_INVALID_SCHEMA = 2;
   MANIFEST_REJECTION_CODE_DUPLICATE_PLUGIN_ID = 3;
   MANIFEST_REJECTION_CODE_UNSUPPORTED_VERSION = 4;
+  MANIFEST_REJECTION_CODE_UNAUTHENTICATED = 5;
+  MANIFEST_REJECTION_CODE_BUILTIN_OVERRIDE_FORBIDDEN = 6;
+  MANIFEST_REJECTION_CODE_UNSUPPORTED_CATEGORY = 7;
+  MANIFEST_REJECTION_CODE_SANDBOX_PROFILE_MISMATCH = 8;
 }
 
 message PortDefinition {
@@ -194,12 +217,16 @@ message RegisteredPlugin {
   int64 queue_depth = 4;                 // Mirrors orchestrator_queue_depth{plugin_id}
   google.protobuf.Timestamp registered_at = 5;
   google.protobuf.Timestamp last_seen_at = 6;
+  string installation_id = 7;
+  bool enabled = 8;
+  bool approval_pending = 9;
 }
 
 message ListPluginsRequest {
   ActorContext actor = 1;
   PluginCategory category = 2;           // Optional filter
   bool include_offline = 3;
+  bool include_disabled = 4;
 }
 
 message ListPluginsResponse {
@@ -234,4 +261,309 @@ message PluginRegistryEvent {
   PluginRegistryEventType event_type = 1;
   RegisteredPlugin plugin = 2;
   google.protobuf.Timestamp occurred_at = 3;
+}
+
+// ============================================================================
+// Plugin Installation Control Plane (ADR-0010, Ticket #28)
+// ============================================================================
+
+enum PluginInstallationStatus {
+  PLUGIN_INSTALLATION_STATUS_UNSPECIFIED = 0;
+  PLUGIN_INSTALLATION_STATUS_PROVISIONING = 1;
+  PLUGIN_INSTALLATION_STATUS_PENDING_APPROVAL = 2;
+  PLUGIN_INSTALLATION_STATUS_ACTIVE = 3;
+  PLUGIN_INSTALLATION_STATUS_DISABLED = 4;
+  PLUGIN_INSTALLATION_STATUS_ERROR = 5;
+  PLUGIN_INSTALLATION_STATUS_DELETING = 6;
+  PLUGIN_INSTALLATION_STATUS_DRAFT = 7;
+}
+
+enum PluginSourceMode {
+  PLUGIN_SOURCE_MODE_UNSPECIFIED = 0;
+  PLUGIN_SOURCE_MODE_PRESET = 1;
+  PLUGIN_SOURCE_MODE_OCI_IMAGE = 2;
+  PLUGIN_SOURCE_MODE_EXTERNAL_PULL = 3;
+  PLUGIN_SOURCE_MODE_DECLARATIVE = 4;
+}
+
+enum PluginInstallationEventType {
+  PLUGIN_INSTALLATION_EVENT_TYPE_UNSPECIFIED = 0;
+  PLUGIN_INSTALLATION_EVENT_TYPE_CREATED = 1;
+  PLUGIN_INSTALLATION_EVENT_TYPE_UPDATED = 2;
+  PLUGIN_INSTALLATION_EVENT_TYPE_APPROVED = 3;
+  PLUGIN_INSTALLATION_EVENT_TYPE_STATUS_CHANGED = 4;
+  PLUGIN_INSTALLATION_EVENT_TYPE_DELETED = 5;
+}
+
+message PluginResourceLimits {
+  string cpu_request = 1;
+  string cpu_limit = 2;
+  string memory_request = 3;
+  string memory_limit = 4;
+  int32 min_replicas = 5;
+  int32 max_replicas = 6;
+}
+
+message PluginRuntimeDiagnostics {
+  string phase = 1;
+  int32 desired_replicas = 2;
+  int32 ready_replicas = 3;
+  string message = 4;
+  string last_error = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+message PluginInstallation {
+  string id = 1;
+  string name = 2;
+  PluginSourceMode source_mode = 3;
+  string preset_id = 4;
+  string image_ref = 5;
+  SandboxProfile sandbox_profile = 6;
+  repeated string egress_allowlist = 7;
+  PluginResourceLimits resource_limits = 8;
+  int32 desired_replicas = 9;
+  PluginInstallationStatus status = 10;
+  bool auto_approve = 11;
+  string approved_manifest_digest = 12;
+  repeated PluginManifest manifests = 13;
+  repeated PluginManifest pending_manifests = 14;
+  repeated string plugin_ids = 15;
+  PluginRuntimeDiagnostics runtime_diagnostics = 16;
+  string created_by = 17;
+  string approved_by = 18;
+  google.protobuf.Timestamp created_at = 19;
+  google.protobuf.Timestamp updated_at = 20;
+  google.protobuf.Timestamp approved_at = 21;
+  string status_reason = 22;
+  bytes declarative_spec_json = 23;
+  bytes pending_declarative_spec_json = 24;
+  string plugin_version = 25;
+}
+
+message PluginPreset {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string image_ref = 4;
+  PluginCategory category = 5;
+  SandboxProfile sandbox_profile = 6;
+  repeated string plugin_ids = 7;
+  repeated PortDefinition output_ports = 8;
+  repeated string required_secret_keys = 9;
+  repeated string default_egress_allowlist = 10;
+  PluginResourceLimits default_resource_limits = 11;
+  bool auto_approve_supported = 12;
+}
+
+message ListPluginInstallationsRequest {
+  ActorContext actor = 1;
+}
+
+message ListPluginInstallationsResponse {
+  repeated PluginInstallation installations = 1;
+}
+
+message GetPluginInstallationRequest {
+  ActorContext actor = 1;
+  string installation_id = 2;
+}
+
+message GetPluginInstallationResponse {
+  PluginInstallation installation = 1;
+}
+
+message ListPluginPresetsRequest {
+  ActorContext actor = 1;
+}
+
+message ListPluginPresetsResponse {
+  repeated PluginPreset presets = 1;
+}
+
+message InstallPluginRequest {
+  ActorContext actor = 1;
+  string name = 2;
+  PluginSourceMode source_mode = 3;
+  string preset_id = 4;
+  string image_ref = 5;
+  SandboxProfile sandbox_profile = 6;
+  repeated string egress_allowlist = 7;
+  PluginResourceLimits resource_limits = 8;
+  int32 desired_replicas = 9;
+  bool auto_approve = 10;
+  bytes declarative_spec_json = 11;
+  bool save_as_draft = 12;
+}
+
+message InstallPluginResponse {
+  PluginInstallation installation = 1;
+  string plaintext_plugin_token = 2;
+}
+
+message ApprovePluginInstallationRequest {
+  ActorContext actor = 1;
+  string installation_id = 2;
+  string expected_manifest_digest = 3;
+}
+
+message ApprovePluginInstallationResponse {
+  PluginInstallation installation = 1;
+}
+
+message UpdatePluginInstallationRequest {
+  ActorContext actor = 1;
+  string installation_id = 2;
+  string image_ref = 3;
+  SandboxProfile sandbox_profile = 4;
+  repeated string egress_allowlist = 5;
+  PluginResourceLimits resource_limits = 6;
+  int32 desired_replicas = 7;
+  bool rotate_token = 8;
+  PluginRuntimeDiagnostics runtime_diagnostics = 9;
+  PluginInstallationStatus status = 10;
+  string status_reason = 11;
+  bytes declarative_spec_json = 12;
+  bool submit_for_approval = 13;
+  bool approve_immediately = 14;
+}
+
+message UpdatePluginInstallationResponse {
+  PluginInstallation installation = 1;
+  string plaintext_plugin_token = 2;
+}
+
+message SetPluginInstallationEnabledRequest {
+  ActorContext actor = 1;
+  string installation_id = 2;
+  bool enabled = 3;
+  string reason = 4;
+}
+
+message SetPluginInstallationEnabledResponse {
+  PluginInstallation installation = 1;
+}
+
+message DeletePluginInstallationRequest {
+  ActorContext actor = 1;
+  string installation_id = 2;
+  string reason = 3;
+}
+
+message DeletePluginInstallationResponse {
+  bool deleted = 1;
+}
+
+message WatchPluginInstallationsRequest {
+  ActorContext actor = 1;
+  string installation_id = 2;
+}
+
+message WatchPluginInstallationsResponse {
+  PluginInstallationEvent event = 1;
+}
+
+message PluginInstallationEvent {
+  PluginInstallationEventType event_type = 1;
+  PluginInstallation installation = 2;
+  google.protobuf.Timestamp occurred_at = 3;
+}
+
+// ============================================================================
+// Declarative Plugin Builder & Saved Nodes (ADR-0011, Spec #33)
+// ============================================================================
+
+message VirtualFile {
+  string path = 1;
+  string content = 2;
+}
+
+message TestDeclarativePluginRequest {
+  ActorContext actor = 1;
+  bytes declarative_spec_json = 2;
+  bytes params_json = 3;
+  repeated VirtualFile files = 4;
+  bytes envelope_json = 5;
+}
+
+message TestDeclarativePluginResponse {
+  bool ok = 1;
+  repeated string validation_errors = 2;
+  repeated Finding findings = 3;
+  repeated string active_output_ports = 4;
+  bytes envelope_patch_json = 5;
+  bytes dry_run_http_json = 6;
+  int64 duration_ms = 7;
+  string summary = 8;
+}
+
+message DeclarativeSpecRecord {
+  string installation_id = 1;
+  string plugin_id = 2;
+  string version = 3;
+  SandboxProfile sandbox_profile = 4;
+  repeated string egress_allowlist = 5;
+  bytes declarative_spec_json = 6;
+  PluginManifest manifest = 7;
+}
+
+message ListDeclarativeSpecsRequest {
+  SandboxProfile sandbox_profile = 1;
+}
+
+message ListDeclarativeSpecsResponse {
+  repeated DeclarativeSpecRecord specs = 1;
+}
+
+message SavedNode {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string plugin_id = 4;
+  bytes params_json = 5;
+  string canonical_params_hash = 6;
+  string created_by = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+message ListSavedNodesRequest {
+  ActorContext actor = 1;
+}
+
+message ListSavedNodesResponse {
+  repeated SavedNode saved_nodes = 1;
+}
+
+message SaveNodeRequest {
+  ActorContext actor = 1;
+  string name = 2;
+  string description = 3;
+  string plugin_id = 4;
+  bytes params_json = 5;
+}
+
+message SaveNodeResponse {
+  SavedNode saved_node = 1;
+}
+
+message UpdateSavedNodeRequest {
+  ActorContext actor = 1;
+  string id = 2;
+  string name = 3;
+  string description = 4;
+  bytes params_json = 5;
+}
+
+message UpdateSavedNodeResponse {
+  SavedNode saved_node = 1;
+}
+
+message DeleteSavedNodeRequest {
+  ActorContext actor = 1;
+  string id = 2;
+}
+
+message DeleteSavedNodeResponse {
+  bool deleted = 1;
 }

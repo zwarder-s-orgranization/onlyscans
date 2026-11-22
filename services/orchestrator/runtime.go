@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"log/slog"
 	"os"
+	"path"
 	"slices"
 	"sort"
 	"strings"
@@ -20,6 +22,7 @@ import (
 	"github.com/secflow/secflow/services/internal/expr"
 	"github.com/secflow/secflow/services/internal/gradleparser"
 	"github.com/secflow/secflow/services/internal/lease"
+	"github.com/secflow/secflow/services/internal/manifest"
 	"github.com/secflow/secflow/services/internal/obs"
 	"github.com/secflow/secflow/services/internal/paramschema"
 	"github.com/secflow/secflow/services/internal/protoconv"
@@ -60,34 +63,224 @@ func sbomRefFromJSON(runID string, raw []byte) *secflowv1.SbomRef {
 	}
 }
 
-func workerResult(n engine.Node, in engine.Envelope, res *secflowv1.NodeResult) engine.Result {
+type externalEnvelopePatch struct {
+	Findings        *[]engine.Finding                `json:"findings,omitempty"`
+	Gate            *engine.GateInfo                 `json:"gate,omitempty"`
+	Vars            map[string]string                `json:"vars,omitempty"`
+	PortEnvelopes   map[string]externalEnvelopePatch `json:"portEnvelopes,omitempty"`
+	ArtifactContent string                           `json:"artifactContent,omitempty"`
+}
+
+func isValidFindingCategory(cat string) bool {
+	switch strings.ToUpper(strings.TrimSpace(cat)) {
+	case "SECRET", "SAST", "SCA":
+		return true
+	default:
+		return false
+	}
+}
+
+func pluginVarKey(pluginID, key string) string {
+	k := strings.TrimSpace(key)
+	if k == "" {
+		return ""
+	}
+	prefix := "plugins." + pluginID + "."
+	if strings.HasPrefix(k, prefix) {
+		return k
+	}
+	return prefix + k
+}
+
+func applyNamespacedVars(target map[string]string, pluginID string, vars map[string]string) {
+	if target == nil {
+		return
+	}
+	for k, v := range vars {
+		if nk := pluginVarKey(pluginID, k); nk != "" {
+			target[nk] = v
+		}
+	}
+}
+
+func applyExternalVarsOrFallback(target map[string]string, pluginID string, patchRaw []byte, fallbackKey string) externalEnvelopePatch {
+	var patch externalEnvelopePatch
+	if len(patchRaw) == 0 {
+		return patch
+	}
+	if err := json.Unmarshal(patchRaw, &patch); err != nil {
+		slog.Warn("unmarshal external plugin envelope patch", "plugin_id", pluginID, "err", err)
+		target[pluginVarKey(pluginID, fallbackKey)] = string(patchRaw)
+		return patch
+	}
+	if len(patch.Vars) > 0 {
+		applyNamespacedVars(target, pluginID, patch.Vars)
+	} else if patch.ArtifactContent == "" {
+		target[pluginVarKey(pluginID, fallbackKey)] = string(patchRaw)
+	}
+	return patch
+}
+
+// sanitizeNodeArtifactKey validates that an external AI_REPORT artifact key stays
+// strictly under runs/<runId>/nodes/<nodeId>/ without traversal or overwriting submission.json.
+func sanitizeNodeArtifactKey(runID, nodeID, rawKey string) string {
+	key := strings.TrimSpace(rawKey)
+	if key == "" || runID == "" || nodeID == "" {
+		return ""
+	}
+	if strings.Contains(key, "\\") || strings.Contains(key, "..") {
+		return ""
+	}
+	cleaned := strings.TrimPrefix(path.Clean("/"+key), "/")
+	prefix := fmt.Sprintf("runs/%s/nodes/%s/", runID, nodeID)
+	if !strings.HasPrefix(cleaned, prefix) || len(cleaned) <= len(prefix) {
+		return ""
+	}
+	if strings.EqualFold(path.Base(cleaned), "submission.json") {
+		return ""
+	}
+	return cleaned
+}
+
+func applyLogicPatch(n engine.Node, base engine.Envelope, patch externalEnvelopePatch) engine.Envelope {
+	env := base.Normalize()
+	if patch.Findings != nil {
+		allowedByID := make(map[string]engine.Finding, len(env.Findings))
+		allowedByFP := make(map[string]engine.Finding, len(env.Findings))
+		for _, existing := range env.Findings {
+			if existing.ID != "" {
+				allowedByID[existing.ID] = existing
+			}
+			if fp := engine.FindingFingerprint(existing); fp != "" {
+				allowedByFP[fp] = existing
+			}
+		}
+		filtered := make([]engine.Finding, 0, len(*patch.Findings))
+		seen := make(map[string]bool, len(*patch.Findings))
+		for _, candidate := range *patch.Findings {
+			var matched engine.Finding
+			var ok bool
+			if candidate.ID != "" {
+				matched, ok = allowedByID[candidate.ID]
+			}
+			if !ok {
+				if fp := engine.FindingFingerprint(candidate); fp != "" {
+					matched, ok = allowedByFP[fp]
+				}
+			}
+			if !ok {
+				continue
+			}
+			dedupKey := matched.ID
+			if dedupKey == "" {
+				dedupKey = engine.FindingFingerprint(matched)
+			}
+			if seen[dedupKey] {
+				continue
+			}
+			seen[dedupKey] = true
+			filtered = append(filtered, matched)
+		}
+		env.Findings = filtered
+	}
+	if patch.Gate != nil && strings.TrimSpace(patch.Gate.Status) != "" {
+		gateCopy := *patch.Gate
+		gateCopy.Status = strings.ToUpper(strings.TrimSpace(gateCopy.Status))
+		if gateCopy.NodeID == "" {
+			gateCopy.NodeID = n.ID
+		}
+		if gateCopy.EvaluatedAt == "" {
+			gateCopy.EvaluatedAt = time.Now().UTC().Format(time.RFC3339)
+		}
+		env.Gate = &gateCopy
+	}
+	applyNamespacedVars(env.Vars, n.PluginID, patch.Vars)
+	env.RefreshStats()
+	return env
+}
+
+func filterDeclaredOutputPorts(returned []string, plugManifest *secflowv1.PluginManifest) []string {
+	if plugManifest == nil || len(plugManifest.GetOutputPorts()) == 0 {
+		if len(returned) == 0 {
+			return []string{"default"}
+		}
+		return returned
+	}
+	allowed := make(map[string]bool, len(plugManifest.GetOutputPorts()))
+	for _, p := range plugManifest.GetOutputPorts() {
+		if portID := strings.TrimSpace(p.GetId()); portID != "" {
+			allowed[portID] = true
+		}
+	}
+	filtered := make([]string, 0, len(returned))
+	for _, h := range returned {
+		if allowed[h] {
+			filtered = append(filtered, h)
+		}
+	}
+	if len(filtered) == 0 && len(returned) == 0 && allowed["default"] {
+		return []string{"default"}
+	}
+	return filtered
+}
+
+func workerResult(n engine.Node, in engine.Envelope, res *secflowv1.NodeResult, plugManifest *secflowv1.PluginManifest) engine.Result {
 	preview := slices.Clone(res.GetRedactedPreviewJson())
 	if res.GetStatus() == secflowv1.NodeRunStatus_NODE_RUN_STATUS_FAILED {
 		return engine.Result{Status: "FAILED", Err: res.GetErrorMessage(), RedactedPreview: preview}
 	}
-	var found []engine.Finding
-	for _, f := range res.GetFindings() {
-		line := int(f.GetLine())
-		endLine := int(f.GetEndLine())
-		found = append(found, engine.Finding{
-			ID: f.GetFindingId(), Fingerprint: f.GetFingerprint(), SourceNodeID: f.GetSourceNodeId(),
-			Class: f.GetFindingClass(), Category: protoconv.CategoryName(f.GetCategory()),
-			Severity: protoconv.TrimEnum(f.GetSeverity().String(), "SEVERITY_"), Path: f.GetPath(),
-			Line: line, EndLine: endLine, Group: f.GetGroup(), Artifact: f.GetArtifact(), Version: f.GetVersion(),
-			AdvisoryID: f.GetAdvisoryId(), Description: f.GetDescription(), Remediation: f.GetRemediation(),
-			MaskedSnippet: f.GetMaskedSnippet(), IsNewVsBaseline: f.GetIsNewVsBaseline(), PluginID: f.GetPluginId(),
-		})
+	pluginID := res.GetPluginId()
+	if pluginID == "" {
+		pluginID = n.PluginID
 	}
+	category := secflowv1.PluginCategory_PLUGIN_CATEGORY_UNSPECIFIED
+	if plugManifest != nil {
+		category = plugManifest.GetCategory()
+	}
+	if category == secflowv1.PluginCategory_PLUGIN_CATEGORY_UNSPECIFIED {
+		if engine.IsAnalyzer(pluginID) {
+			category = secflowv1.PluginCategory_PLUGIN_CATEGORY_ANALYZER
+		}
+	}
+
 	out := in.Normalize()
-	out.Findings = append(out.Findings, found...)
-	if len(res.GetEnvelopePatchJson()) > 0 {
-		switch res.GetPluginId() {
-		case "sbom.generate":
-			out.Vars["sbom"] = string(res.GetEnvelopePatchJson())
-		case "ai.explain":
-			out.Vars["explain"] = string(res.GetEnvelopePatchJson())
+	var found []engine.Finding
+	if category == secflowv1.PluginCategory_PLUGIN_CATEGORY_ANALYZER && pluginID != "sbom.generate" {
+		for _, f := range res.GetFindings() {
+			catName := protoconv.CategoryName(f.GetCategory())
+			if !isValidFindingCategory(catName) {
+				continue
+			}
+			line := int(f.GetLine())
+			endLine := int(f.GetEndLine())
+			found = append(found, engine.Finding{
+				ID: f.GetFindingId(), Fingerprint: f.GetFingerprint(), SourceNodeID: f.GetSourceNodeId(),
+				Class: f.GetFindingClass(), Category: catName,
+				Severity: protoconv.TrimEnum(f.GetSeverity().String(), "SEVERITY_"), Path: f.GetPath(),
+				Line: line, EndLine: endLine, Group: f.GetGroup(), Artifact: f.GetArtifact(), Version: f.GetVersion(),
+				AdvisoryID: f.GetAdvisoryId(), Description: f.GetDescription(), Remediation: f.GetRemediation(),
+				MaskedSnippet: f.GetMaskedSnippet(), IsNewVsBaseline: f.GetIsNewVsBaseline(), PluginID: nonEmpty(f.GetPluginId(), pluginID),
+			})
+		}
+		out.Findings = append(out.Findings, found...)
+	}
+
+	var portEnvelopes map[string]engine.Envelope
+	var artifactKey string
+	var artifactContent []byte
+	patchRaw := res.GetEnvelopePatchJson()
+	switch pluginID {
+	case "sbom.generate":
+		if len(patchRaw) > 0 {
+			out.Vars["sbom"] = string(patchRaw)
+		}
+	case "ai.explain":
+		if len(patchRaw) > 0 {
+			out.Vars["explain"] = string(patchRaw)
 			var aiInfo engine.AIReportInfo
-			if json.Unmarshal(res.GetEnvelopePatchJson(), &aiInfo) == nil && aiInfo.ExecutiveSummary != "" {
+			if err := json.Unmarshal(patchRaw, &aiInfo); err != nil {
+				slog.Warn("unmarshal ai.explain envelope patch", "node_id", n.ID, "err", err)
+			} else if aiInfo.ExecutiveSummary != "" {
 				if aiInfo.Groups == nil {
 					aiInfo.Groups = []engine.AIReportGroupInfo{}
 				}
@@ -99,16 +292,60 @@ func workerResult(n engine.Node, in engine.Envelope, res *secflowv1.NodeResult) 
 				}
 				out.AIReport = &aiInfo
 			}
-		case "mcp.tool":
-			out.Vars[mcpOutputVarKey(n)] = string(res.GetEnvelopePatchJson())
+		}
+	case "mcp.tool":
+		if len(patchRaw) > 0 {
+			out.Vars[mcpOutputVarKey(n)] = string(patchRaw)
+		}
+	default:
+		switch category {
+		case secflowv1.PluginCategory_PLUGIN_CATEGORY_LOGIC:
+			if len(patchRaw) > 0 {
+				var patch externalEnvelopePatch
+				if err := json.Unmarshal(patchRaw, &patch); err != nil {
+					slog.Warn("unmarshal logic plugin envelope patch", "plugin_id", pluginID, "node_id", n.ID, "err", err)
+				} else {
+					out = applyLogicPatch(n, out, patch)
+					if len(patch.PortEnvelopes) > 0 {
+						portEnvelopes = make(map[string]engine.Envelope, len(patch.PortEnvelopes))
+						for handle, pp := range patch.PortEnvelopes {
+							portEnvelopes[handle] = applyLogicPatch(n, out, pp)
+						}
+					}
+				}
+			}
+		case secflowv1.PluginCategory_PLUGIN_CATEGORY_AI_REPORT:
+			runID := res.GetRunId()
+			if runID == "" {
+				runID = out.RunID
+			}
+			if key := sanitizeNodeArtifactKey(runID, n.ID, res.GetPayloadS3Key()); key != "" {
+				artifactKey = key
+				out.Vars[pluginVarKey(pluginID, "artifactKey")] = key
+			} else if strings.TrimSpace(res.GetPayloadS3Key()) != "" {
+				slog.Warn("rejected unsafe ai_report artifact key", "plugin_id", pluginID, "node_id", n.ID, "key", res.GetPayloadS3Key())
+			}
+			patch := applyExternalVarsOrFallback(out.Vars, pluginID, patchRaw, "metadata")
+			if artifactKey != "" && patch.ArtifactContent != "" {
+				artifactContent = []byte(patch.ArtifactContent)
+			}
+		case secflowv1.PluginCategory_PLUGIN_CATEGORY_ACTION:
+			_ = applyExternalVarsOrFallback(out.Vars, pluginID, patchRaw, "result")
 		}
 	}
+
 	out.RefreshStats()
-	ports := res.GetActiveOutputPorts()
-	if len(ports) == 0 {
-		ports = []string{"default"}
+	ports := filterDeclaredOutputPorts(res.GetActiveOutputPorts(), plugManifest)
+	return engine.Result{
+		Findings:        found,
+		Envelope:        out,
+		PortEnvelopes:   portEnvelopes,
+		ActivePorts:     ports,
+		ArtifactKey:     artifactKey,
+		ArtifactContent: artifactContent,
+		Status:          "SUCCEEDED",
+		RedactedPreview: preview,
 	}
-	return engine.Result{Findings: found, Envelope: out, ActivePorts: ports, Status: "SUCCEEDED", RedactedPreview: preview}
 }
 
 func sbomResult(root string, in engine.Envelope) engine.Result {
@@ -258,23 +495,53 @@ func exprVarsFromEnvelope(in engine.Envelope, runID string) map[string]string {
 }
 
 func resolveNodeParams(n engine.Node, in engine.Envelope) engine.Node {
+	return resolveNodeParamsWithSecretKeys(n, in, nil)
+}
+
+func resolveNodeParamsWithSecretKeys(n engine.Node, in engine.Envelope, secretKeys []string) engine.Node {
 	if len(n.Params) == 0 {
 		return n
 	}
+	preserveUnknown := false
 	switch n.PluginID {
 	case "source.git", "notify.telegram", "notify.webhook", "notify.smtp":
-		vars := exprVarsFromEnvelope(in, in.RunID)
-		cp := n
-		cp.Params = expr.EvalMapPreserveUnknown(n.Params, vars)
-		return cp
+		preserveUnknown = true
 	case "mcp.tool", "report.export":
 		vars := exprVarsFromEnvelope(in, in.RunID)
 		cp := n
 		cp.Params = expr.EvalMap(n.Params, vars)
 		return cp
 	default:
+		if _, isBuiltin := manifest.LookupBuiltin(n.PluginID); isBuiltin {
+			return n
+		}
+		preserveUnknown = true
+	}
+
+	if !preserveUnknown {
 		return n
 	}
+	vars := exprVarsFromEnvelope(in, in.RunID)
+	skip := map[string]bool{}
+	for k := range n.Secrets {
+		skip[k] = true
+	}
+	for _, k := range secretKeys {
+		if trimmed := strings.TrimSpace(k); trimmed != "" {
+			skip[trimmed] = true
+		}
+	}
+	evaluated := make(map[string]any, len(n.Params))
+	for k, v := range n.Params {
+		if skip[k] {
+			evaluated[k] = v
+			continue
+		}
+		evaluated[k] = expr.EvalValuePreserveUnknown(v, vars)
+	}
+	cp := n
+	cp.Params = evaluated
+	return cp
 }
 
 func wrapHandlersWithExpr(base map[string]engine.Handler) map[string]engine.Handler {

@@ -1,0 +1,75 @@
+# Production Kubernetes values overlay.
+# Supply secrets via --set or external secret manager (never commit real secrets).
+
+global:
+  env: production
+  imagePullPolicy: IfNotPresent
+
+auth:
+  requireWorkerServiceToken: true
+
+orchestrator:
+  replicas: 2
+  maxConcurrentTasks: 64
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+edgeGateway:
+  replicas: 2
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+web:
+  replicas: 2
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+
+workerScaling:
+  mode: orchestrator
+  precreatePureWorkers: false
+  idleTtlSeconds: 180
+  defaultMaxReplicas: 8
+  pools:
+    workerKotlin:
+      minReplicas: 0
+      maxReplicas: 8
+      tasksPerWorker: 1
+      cooldownSeconds: 180
+    workerSca:
+      minReplicas: 0
+      maxReplicas: 8
+      tasksPerWorker: 2
+      cooldownSeconds: 180
+    sbomService:
+      minReplicas: 0
+      maxReplicas: 8
+      tasksPerWorker: 2
+      cooldownSeconds: 180
+
+networkPolicies:
+  enabled: true
+
+observability:
+  enabled: true
+
+ingress:
+  enabled: true
+  className: nginx
+  tls:
+    enabled: true
+    secretName: onlyscans-tls

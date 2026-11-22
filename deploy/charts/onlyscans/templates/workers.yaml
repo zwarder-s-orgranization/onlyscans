@@ -1,0 +1,459 @@
+# Dual-role worker + gRPC services (always deployed with Services; scaled up/down dynamically by orchestrator or KEDA).
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-service
+  namespace: {{ .Values.namespaces.workers }}
+  labels:
+    app: ai-service
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+spec:
+  ports:
+    - name: grpc
+      port: 50053
+      targetPort: grpc
+    - name: http
+      port: 8086
+      targetPort: http
+  selector:
+    app: ai-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-service
+  namespace: {{ .Values.namespaces.workers }}
+  labels:
+    app: ai-service
+    secflow.io/worker-pool: ai-service
+    secflow.io/egress-tier: egress-external
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.workerScaling.pools.aiService.minReplicas }}
+  selector:
+    matchLabels:
+      app: ai-service
+  template:
+    metadata:
+      labels:
+        app: ai-service
+        secflow.io/worker-pool: ai-service
+        secflow.io/egress-tier: egress-external
+        {{- include "secflow.commonLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "secflow.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: ai-service
+          image: {{ include "secflow.image" (dict "root" . "repo" "ai-service") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: 50053
+            - name: http
+              containerPort: 8086
+          env:
+            - name: GRPC_ADDR
+              value: ":50053"
+            - name: HTTP_ADDR
+              value: ":8086"
+            - name: ORCHESTRATOR_ADDR
+              value: {{ include "secflow.orchestratorAddr" . | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: WORKER_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-worker-auth
+                  key: SERVICE_TOKEN
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-db
+                  key: DATABASE_URL
+            - name: REDIS_ADDR
+              value: {{ include "secflow.redisAddr" . | quote }}
+            - name: AI_PROVIDER
+              value: {{ .Values.ai.provider | quote }}
+            - name: OLLAMA_URL
+              value: {{ .Values.ai.ollamaUrl | quote }}
+            - name: OLLAMA_MODEL
+              value: {{ .Values.ai.ollamaModel | quote }}
+            - name: LLM_BASE_URL
+              value: {{ .Values.ai.llmBaseUrl | quote }}
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-worker-auth
+                  key: LLM_API_KEY
+                  optional: true
+            - name: LLM_MODEL
+              value: {{ .Values.ai.llmModel | quote }}
+            - name: MCP_ALLOW_PRIVATE
+              value: {{ if .Values.ai.allowPrivateMcp }}"1"{{ else }}"0"{{ end }}
+            - name: GARAGE_ENDPOINT
+              value: {{ include "secflow.garageEndpoint" . | quote }}
+            - name: GARAGE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.garage.secretName }}
+                  key: GARAGE_ACCESS_KEY
+                  optional: true
+            - name: GARAGE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.garage.secretName }}
+                  key: GARAGE_SECRET_KEY
+                  optional: true
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ include "secflow.otelEndpoint" . | quote }}
+          securityContext:
+            {{- include "secflow.containerSecurityContext" . | nindent 12 }}
+          resources:
+            requests:
+              cpu: {{ .Values.workerScaling.pools.aiService.cpuRequest }}
+              memory: {{ .Values.workerScaling.pools.aiService.memoryRequest }}
+            limits:
+              cpu: {{ .Values.workerScaling.pools.aiService.cpuLimit }}
+              memory: {{ .Values.workerScaling.pools.aiService.memoryLimit }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.workerScaling.pools.aiService.emptyDirSizeLimit }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notify-service
+  namespace: {{ .Values.namespaces.workers }}
+  labels:
+    app: notify-service
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+spec:
+  ports:
+    - name: grpc
+      port: 50054
+      targetPort: grpc
+    - name: http
+      port: 8087
+      targetPort: http
+  selector:
+    app: notify-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notify-service
+  namespace: {{ .Values.namespaces.workers }}
+  labels:
+    app: notify-service
+    secflow.io/worker-pool: notify-service
+    secflow.io/egress-tier: egress-external
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.workerScaling.pools.notifyService.minReplicas }}
+  selector:
+    matchLabels:
+      app: notify-service
+  template:
+    metadata:
+      labels:
+        app: notify-service
+        secflow.io/worker-pool: notify-service
+        secflow.io/egress-tier: egress-external
+        {{- include "secflow.commonLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "secflow.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: notify-service
+          image: {{ include "secflow.image" (dict "root" . "repo" "notify-service") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: 50054
+            - name: http
+              containerPort: 8087
+          env:
+            - name: GRPC_ADDR
+              value: ":50054"
+            - name: HTTP_ADDR
+              value: ":8087"
+            - name: ORCHESTRATOR_ADDR
+              value: {{ include "secflow.orchestratorAddr" . | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: WORKER_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-worker-auth
+                  key: SERVICE_TOKEN
+            - name: WEBHOOK_INSPECTOR_URL_PREFIX
+              value: {{ printf "http://edge-gateway.%s.svc.cluster.local:8080/webhooks/inspector/" .Values.namespaces.app | quote }}
+            - name: SECFLOW_PUBLIC_URL
+              value: {{ .Values.global.publicUrl | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ include "secflow.otelEndpoint" . | quote }}
+          securityContext:
+            {{- include "secflow.containerSecurityContext" . | nindent 12 }}
+          resources:
+            requests:
+              cpu: {{ .Values.workerScaling.pools.notifyService.cpuRequest }}
+              memory: {{ .Values.workerScaling.pools.notifyService.memoryRequest }}
+            limits:
+              cpu: {{ .Values.workerScaling.pools.notifyService.cpuLimit }}
+              memory: {{ .Values.workerScaling.pools.notifyService.memoryLimit }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.workerScaling.pools.notifyService.emptyDirSizeLimit }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-bridge
+  namespace: {{ .Values.namespaces.workers }}
+  labels:
+    app: mcp-bridge
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+spec:
+  ports:
+    - name: http
+      port: 8088
+      targetPort: http
+  selector:
+    app: mcp-bridge
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-bridge
+  namespace: {{ .Values.namespaces.workers }}
+  labels:
+    app: mcp-bridge
+    secflow.io/worker-pool: mcp-bridge
+    secflow.io/egress-tier: egress-external
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.workerScaling.pools.mcpBridge.minReplicas }}
+  selector:
+    matchLabels:
+      app: mcp-bridge
+  template:
+    metadata:
+      labels:
+        app: mcp-bridge
+        secflow.io/worker-pool: mcp-bridge
+        secflow.io/egress-tier: egress-external
+        {{- include "secflow.commonLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "secflow.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: mcp-bridge
+          image: {{ include "secflow.image" (dict "root" . "repo" "mcp-bridge") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8088
+          env:
+            - name: HTTP_ADDR
+              value: ":8088"
+            - name: ORCHESTRATOR_ADDR
+              value: {{ include "secflow.orchestratorAddr" . | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: WORKER_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-worker-auth
+                  key: SERVICE_TOKEN
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ include "secflow.otelEndpoint" . | quote }}
+          securityContext:
+            {{- include "secflow.containerSecurityContext" . | nindent 12 }}
+          resources:
+            requests:
+              cpu: {{ .Values.workerScaling.pools.mcpBridge.cpuRequest }}
+              memory: {{ .Values.workerScaling.pools.mcpBridge.memoryRequest }}
+            limits:
+              cpu: {{ .Values.workerScaling.pools.mcpBridge.cpuLimit }}
+              memory: {{ .Values.workerScaling.pools.mcpBridge.memoryLimit }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.workerScaling.pools.mcpBridge.emptyDirSizeLimit }}
+{{- if or (ne .Values.workerScaling.mode "orchestrator") .Values.workerScaling.precreatePureWorkers }}
+{{- $pureWorkers := list
+  (dict "name" "worker-kotlin" "pool" .Values.workerScaling.pools.workerKotlin)
+  (dict "name" "worker-sca" "pool" .Values.workerScaling.pools.workerSca)
+  (dict "name" "sbom-service" "pool" .Values.workerScaling.pools.sbomService)
+}}
+{{- range $w := $pureWorkers }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $w.name }}
+  namespace: {{ $.Values.namespaces.workers }}
+  labels:
+    app: {{ $w.name }}
+    secflow.io/worker-pool: {{ $w.name }}
+    secflow.io/egress-tier: internal-only
+    {{- include "secflow.commonLabels" $ | nindent 4 }}
+spec:
+  replicas: {{ if eq $.Values.workerScaling.mode "static" }}{{ max 1 $w.pool.minReplicas }}{{ else }}{{ $w.pool.minReplicas }}{{ end }}
+  selector:
+    matchLabels:
+      app: {{ $w.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ $w.name }}
+        secflow.io/worker-pool: {{ $w.name }}
+        secflow.io/egress-tier: internal-only
+        {{- include "secflow.commonLabels" $ | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      {{- with $.Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "secflow.podSecurityContext" $ | nindent 8 }}
+      containers:
+        - name: {{ $w.name }}
+          image: {{ include "secflow.image" (dict "root" $ "repo" $w.name) }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          env:
+            - name: ORCHESTRATOR_ADDR
+              value: {{ include "secflow.orchestratorAddr" $ | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: WORKER_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-worker-auth
+                  key: SERVICE_TOKEN
+            - name: GARAGE_ENDPOINT
+              value: {{ include "secflow.garageEndpoint" $ | quote }}
+            - name: GARAGE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.garage.secretName }}
+                  key: GARAGE_ACCESS_KEY
+                  optional: true
+            - name: GARAGE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.garage.secretName }}
+                  key: GARAGE_SECRET_KEY
+                  optional: true
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ include "secflow.otelEndpoint" $ | quote }}
+          securityContext:
+            {{- include "secflow.containerSecurityContext" $ | nindent 12 }}
+          resources:
+            requests:
+              cpu: {{ $w.pool.cpuRequest }}
+              memory: {{ $w.pool.memoryRequest }}
+            limits:
+              cpu: {{ $w.pool.cpuLimit }}
+              memory: {{ $w.pool.memoryLimit }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ $w.pool.emptyDirSizeLimit }}
+{{- end }}
+{{- end }}

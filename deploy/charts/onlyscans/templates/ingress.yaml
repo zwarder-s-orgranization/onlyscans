@@ -1,0 +1,89 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: secflow
+  namespace: {{ .Values.namespaces.app }}
+  labels:
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+  annotations:
+    {{- if eq .Values.ingress.className "nginx" }}
+    nginx.ingress.kubernetes.io/proxy-body-size: "64m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className | quote }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tls.secretName | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /graphql
+            pathType: Prefix
+            backend:
+              service:
+                name: edge-gateway
+                port:
+                  number: 8080
+          - path: /upload
+            pathType: Prefix
+            backend:
+              service:
+                name: edge-gateway
+                port:
+                  number: 8080
+          - path: /catalogs
+            pathType: Prefix
+            backend:
+              service:
+                name: edge-gateway
+                port:
+                  number: 8080
+          - path: /runs
+            pathType: Prefix
+            backend:
+              service:
+                name: edge-gateway
+                port:
+                  number: 8080
+          - path: /webhooks
+            pathType: Prefix
+            backend:
+              service:
+                name: edge-gateway
+                port:
+                  number: 8080
+          - path: /mcp
+            pathType: Prefix
+            backend:
+              service:
+                name: edge-gateway
+                port:
+                  number: 8080
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: edge-gateway
+                port:
+                  number: 8080
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 3000
+{{- end }}

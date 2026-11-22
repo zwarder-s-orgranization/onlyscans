@@ -1,0 +1,59 @@
+# Alternative Argo CD Application deploying directly from the Git repository Helm chart path
+# (useful when you want instant sync on Git commits without waiting for OCI chart release).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: onlyscans-git
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: onlyscans
+  source:
+    repoURL: https://github.com/zwarder-s-orgranization/hz_chto_viydet.git
+    targetRevision: main
+    path: deploy/charts/onlyscans
+    helm:
+      releaseName: onlyscans
+      valueFiles:
+        - values-k3s.yaml
+      valuesObject:
+        global:
+          imageRegistry: ghcr.io/zwarder-s-orgranization/onlyscans
+          imageTag: latest
+          # Replace with your real HTTPS domain served by Angie:
+          # publicUrl: "https://onlyscans.example.com"
+          # corsAllowOrigins: "https://onlyscans.example.com,http://localhost:3000"
+        ingress:
+          enabled: false
+        web:
+          service:
+            type: NodePort
+            nodePort: 30300
+        edgeGateway:
+          service:
+            type: NodePort
+            nodePort: 30808
+        observability:
+          enabled: true
+          grafana:
+            service:
+              type: NodePort
+              nodePort: 30301
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: secflow-app
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      namespace: secflow-workers
+      jsonPointers:
+        - /spec/replicas
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true

@@ -1,0 +1,171 @@
+{{- if .Values.declarativeRuntimes.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plugin-runtime-internal
+  namespace: {{ .Values.namespaces.sandbox }}
+  labels:
+    app: plugin-runtime-internal
+    secflow.io/declarative-runtime: internal
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.declarativeRuntimes.internal.replicas }}
+  selector:
+    matchLabels:
+      app: plugin-runtime-internal
+  template:
+    metadata:
+      labels:
+        app: plugin-runtime-internal
+        secflow.io/declarative-runtime: internal
+        {{- include "secflow.commonLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "secflow.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: plugin-runtime-internal
+          image: {{ include "secflow.image" (dict "root" . "repo" .Values.declarativeRuntimes.internal.imageRepository) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8090
+          env:
+            - name: HTTP_ADDR
+              value: ":8090"
+            - name: WORKER_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              value: {{ .Values.namespaces.sandbox | quote }}
+            - name: ORCHESTRATOR_ADDR
+              value: {{ include "secflow.orchestratorAddr" . | quote }}
+            - name: GARAGE_ENDPOINT
+              value: {{ include "secflow.garageEndpoint" . | quote }}
+            - name: SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-sandbox-runtime-auth
+                  key: SERVICE_TOKEN
+            - name: GARAGE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.garage.secretName }}
+                  key: GARAGE_ACCESS_KEY
+                  optional: true
+            - name: GARAGE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.garage.secretName }}
+                  key: GARAGE_SECRET_KEY
+                  optional: true
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ include "secflow.otelEndpoint" . | quote }}
+          securityContext:
+            {{- include "secflow.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.declarativeRuntimes.internal.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plugin-runtime-action
+  namespace: {{ .Values.namespaces.sandbox }}
+  labels:
+    app: plugin-runtime-action
+    secflow.io/declarative-runtime: action
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.declarativeRuntimes.action.replicas }}
+  selector:
+    matchLabels:
+      app: plugin-runtime-action
+  template:
+    metadata:
+      labels:
+        app: plugin-runtime-action
+        secflow.io/declarative-runtime: action
+        {{- include "secflow.commonLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "secflow.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: plugin-runtime-action
+          image: {{ include "secflow.image" (dict "root" . "repo" .Values.declarativeRuntimes.action.imageRepository) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8091
+          env:
+            - name: HTTP_ADDR
+              value: ":8091"
+            - name: WORKER_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              value: {{ .Values.namespaces.sandbox | quote }}
+            - name: SECFLOW_ENV
+              value: {{ .Values.global.env | quote }}
+            - name: ORCHESTRATOR_ADDR
+              value: {{ include "secflow.orchestratorAddr" . | quote }}
+            - name: SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-sandbox-runtime-auth
+                  key: SERVICE_TOKEN
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ include "secflow.otelEndpoint" . | quote }}
+          securityContext:
+            {{- include "secflow.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.declarativeRuntimes.action.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi
+{{- end }}

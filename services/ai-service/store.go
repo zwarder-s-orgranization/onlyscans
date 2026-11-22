@@ -22,6 +22,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	secflowv1 "github.com/secflow/secflow/packages/proto/gen/go/secflow/v1"
+	"github.com/secflow/secflow/services/internal/envutil"
+	"github.com/secflow/secflow/services/internal/secretclient"
 	"github.com/secflow/secflow/services/internal/urlguard"
 )
 
@@ -257,9 +259,135 @@ func (a *aiSvc) persist(ctx context.Context, entry *secflowv1.AIAuditLogEntry) {
 }
 
 type llmConfig struct {
-	BaseURL string
-	APIKey  string
-	Model   string
+	BaseURL    string
+	APIKey     string
+	Model      string
+	TimeoutSec int
+}
+
+type savedProviderSettings struct {
+	Mode                string
+	BaseURL             string
+	Model               string
+	SecretRef           string
+	TimeoutSec          int
+	AllowTextToWorkflow bool
+}
+
+func (a *aiSvc) loadProviderSettings(ctx context.Context) (*savedProviderSettings, bool) {
+	if a == nil || a.pool == nil {
+		return nil, false
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var s savedProviderSettings
+	err := a.pool.QueryRow(readCtx, `
+		SELECT mode, base_url, model, secret_ref, timeout_sec, allow_text_to_workflow
+		FROM ai_provider_settings
+		WHERE id = 'default'`).Scan(
+		&s.Mode, &s.BaseURL, &s.Model, &s.SecretRef, &s.TimeoutSec, &s.AllowTextToWorkflow,
+	)
+	if err != nil {
+		return nil, false
+	}
+	return &s, true
+}
+
+func (a *aiSvc) resolveProviderSecret(ctx context.Context, secretRef string) string {
+	ref := strings.TrimSpace(secretRef)
+	if ref == "" || a == nil || strings.TrimSpace(a.orchAddr) == "" {
+		return ""
+	}
+	svcTok := envutil.Get("SERVICE_TOKEN", "dev-service-token")
+	plain, err := secretclient.ResolveAIProviderSecret(ctx, a.orchAddr, svcTok, ref)
+	if err != nil {
+		slog.WarnContext(ctx, "resolve global ai provider secret failed", "secret_ref", ref, "err", err)
+		return ""
+	}
+	return strings.TrimSpace(plain)
+}
+
+func (a *aiSvc) resolveEffectiveLLMConfig(ctx context.Context, params map[string]any, boundAPIKey string) llmConfig {
+	nodeBase := normalizeLLMBaseURL(strings.TrimSpace(asString(params["baseUrl"])))
+	nodeModel := strings.TrimSpace(asString(params["model"]))
+	nodeKey := strings.TrimSpace(boundAPIKey)
+
+	if saved, ok := a.loadProviderSettings(ctx); ok {
+		mode := strings.ToLower(strings.TrimSpace(saved.Mode))
+		if mode == "deterministic-only" || mode == "template_fallback" || mode == "template" {
+			if nodeBase == "" {
+				return llmConfig{Model: nodeModel, TimeoutSec: saved.TimeoutSec}
+			}
+			// Explicit node baseUrl still works even when global mode is deterministic-only.
+			return llmConfig{
+				BaseURL:    nodeBase,
+				APIKey:     firstNonEmpty(nodeKey, strings.TrimSpace(os.Getenv("LLM_API_KEY"))),
+				Model:      firstNonEmpty(nodeModel, strings.TrimSpace(os.Getenv("LLM_MODEL"))),
+				TimeoutSec: saved.TimeoutSec,
+			}
+		}
+		globalBase := normalizeLLMBaseURL(strings.TrimSpace(saved.BaseURL))
+		globalModel := strings.TrimSpace(saved.Model)
+		globalKey := ""
+		if strings.TrimSpace(saved.SecretRef) != "" && (nodeBase == "" || nodeKey == "") {
+			globalKey = a.resolveProviderSecret(ctx, saved.SecretRef)
+		}
+		effectiveKey := firstNonEmpty(nodeKey, globalKey, strings.TrimSpace(os.Getenv("LLM_API_KEY")))
+		if nodeBase == "" {
+			effectiveKey = firstNonEmpty(globalKey, nodeKey, strings.TrimSpace(os.Getenv("LLM_API_KEY")))
+		}
+		return llmConfig{
+			BaseURL:    firstNonEmpty(nodeBase, globalBase, normalizeLLMBaseURL(strings.TrimSpace(os.Getenv("LLM_BASE_URL"))), normalizeLLMBaseURL(strings.TrimSpace(os.Getenv("OLLAMA_URL")))),
+			APIKey:     effectiveKey,
+			Model:      firstNonEmpty(nodeModel, globalModel, strings.TrimSpace(os.Getenv("LLM_MODEL")), strings.TrimSpace(os.Getenv("OLLAMA_MODEL"))),
+			TimeoutSec: saved.TimeoutSec,
+		}
+	}
+	return resolveLLMConfig(params, boundAPIKey)
+}
+
+func (a *aiSvc) providerStatus(ctx context.Context) *secflowv1.GetProviderStatusResponse {
+	if saved, ok := a.loadProviderSettings(ctx); ok {
+		modeStr := strings.ToLower(strings.TrimSpace(saved.Mode))
+		mode := secflowv1.AIProviderMode_AI_PROVIDER_MODE_TEMPLATE_FALLBACK
+		switch modeStr {
+		case "openai-compatible", "cloud":
+			mode = secflowv1.AIProviderMode_AI_PROVIDER_MODE_CLOUD
+		case "local-ollama", "ollama":
+			mode = secflowv1.AIProviderMode_AI_PROVIDER_MODE_OLLAMA
+		}
+		defaultPrivacy := defaultPrivacyForMode(mode)
+		activeURL := normalizeLLMBaseURL(strings.TrimSpace(saved.BaseURL))
+		if mode == secflowv1.AIProviderMode_AI_PROVIDER_MODE_TEMPLATE_FALLBACK || activeURL == "" {
+			return &secflowv1.GetProviderStatusResponse{
+				ProviderMode:       secflowv1.AIProviderMode_AI_PROVIDER_MODE_TEMPLATE_FALLBACK,
+				ModelId:            "template-fallback",
+				EndpointHost:       "local",
+				ClosedLoop:         true,
+				DefaultPrivacyMode: defaultPrivacy,
+				Healthy:            true,
+			}
+		}
+		apiKey := a.resolveProviderSecret(ctx, saved.SecretRef)
+		healthy := probeLLMHealth(ctx, activeURL, apiKey, mode)
+		modelID := strings.TrimSpace(saved.Model)
+		if modelID == "" {
+			if mode == secflowv1.AIProviderMode_AI_PROVIDER_MODE_OLLAMA {
+				modelID = "llama3.2"
+			} else {
+				modelID = "gpt-4o-mini"
+			}
+		}
+		return &secflowv1.GetProviderStatusResponse{
+			ProviderMode:       mode,
+			ModelId:            modelID,
+			EndpointHost:       sanitizedHostname(activeURL),
+			ClosedLoop:         mode != secflowv1.AIProviderMode_AI_PROVIDER_MODE_CLOUD,
+			DefaultPrivacyMode: defaultPrivacy,
+			Healthy:            healthy,
+		}
+	}
+	return detectProviderStatus(ctx)
 }
 
 type chatMessage struct {
@@ -658,6 +786,9 @@ func postChatCompletion(ctx context.Context, cfg llmConfig, messages []chatMessa
 	attemptTimeout := 55 * time.Second
 	if ollama {
 		attemptTimeout = 85 * time.Second
+	}
+	if cfg.TimeoutSec >= 5 && cfg.TimeoutSec <= 180 {
+		attemptTimeout = time.Duration(cfg.TimeoutSec) * time.Second
 	}
 	var (
 		raw       []byte

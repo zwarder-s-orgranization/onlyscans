@@ -1,4 +1,8 @@
 import type {
+  GqlSandboxProfile,
+  JsonSchemaObject,
+} from "./plugins-data";
+import type {
   NodeFamily,
   PolicyVerdict,
   StarterTemplateRecord,
@@ -57,8 +61,13 @@ export interface CanvasNodeTemplate {
   optionalSecretKeys?: string[];
   defaultConfig: Record<string, string>;
   sampleOutput: Record<string, string | number | boolean | string[]>;
+  isExternal?: boolean;
+  sandboxProfile?: GqlSandboxProfile;
+  paramsJsonSchema?: JsonSchemaObject;
+  installationId?: string;
 }
 
+export type NodePluginHealth = "OK" | "PLUGIN_DISABLED" | "PLUGIN_UNREGISTERED";
 export type CanvasNodeCatalogItem = CanvasNodeTemplate;
 
 export type CanvasNodeRunStatus = "idle" | "running" | "succeeded" | "warning" | "failed";
@@ -118,6 +127,18 @@ export interface CanvasBoardNodeData extends Record<string, unknown> {
   sampleOutput: Record<string, string | number | boolean | string[]>;
   runStatus: CanvasNodeRunStatus;
   findingsEmitted?: number;
+  isExternal?: boolean;
+  sandboxProfile?: GqlSandboxProfile;
+  paramsJsonSchema?: JsonSchemaObject;
+  installationId?: string;
+  pluginHealth?: NodePluginHealth;
+  /** Declarative Plugin unsaved draft or bound spec on canvas (ADR-0011). */
+  declarativeSpec?: Record<string, unknown>;
+  declarativeUnsaved?: boolean;
+  declarativeDirty?: boolean;
+  /** Saved Node binding for built-in/external Node deduplication. */
+  savedNodeId?: string;
+  savedCanonicalParams?: string;
 }
 
 export interface CanvasBoardNode {
@@ -593,7 +614,7 @@ export const CANVAS_NODE_CATALOG: CanvasNodeTemplate[] = [
     inputs: 1,
     outputs: ["out"],
     defaultConfig: {
-      title: "SecFlow Security Report",
+      title: "onlyscans Security Report",
       notes: "",
       formats: "MARKDOWN, HTML",
     },
@@ -664,7 +685,7 @@ export const CANVAS_NODE_CATALOG: CanvasNodeTemplate[] = [
     requiredSecretKeys: ["smtpPassword"],
     defaultConfig: {
       to: "sec-team@secflow.local",
-      subject: "[SecFlow] Отчёт безопасности",
+      subject: "[onlyscans] Отчёт безопасности",
       bodyTemplate: "",
       smtpAddr: "",
       smtpUser: "",
@@ -741,6 +762,10 @@ export function createCanvasNodeFromTemplate(
       config: { ...tpl.defaultConfig },
       sampleOutput: { ...tpl.sampleOutput },
       runStatus: "idle",
+      isExternal: tpl.isExternal,
+      sandboxProfile: tpl.sandboxProfile,
+      paramsJsonSchema: tpl.paramsJsonSchema,
+      installationId: tpl.installationId,
     },
   };
 }
@@ -890,8 +915,8 @@ export function autoLayoutBoard(
 
   const sortedColKeys = Array.from(cols.keys()).sort((a, b) => a - b);
   const posMap = new Map<string, { x: number; y: number }>();
-  const colSpacing = 290;
-  const rowSpacing = 148;
+  const colSpacing = 316;
+  const rowSpacing = 168;
   const centerY = 210;
 
   sortedColKeys.forEach((colKey, visualColIdx) => {

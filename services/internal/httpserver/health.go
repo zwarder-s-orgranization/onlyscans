@@ -10,14 +10,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// NewHandler returns an HTTP handler serving /healthz and Prometheus /metrics.
+// NewHandler returns an HTTP handler serving /healthz, /readyz, and Prometheus /metrics.
 func NewHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	okHandler := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
+	}
+	mux.HandleFunc("/healthz", okHandler)
+	mux.HandleFunc("/readyz", okHandler)
 	mux.Handle("/metrics", promhttp.Handler())
 	return mux
 }

@@ -1,0 +1,59 @@
+{{- if .Values.namespaces.create }}
+{{- $pss := .Values.namespaces.podSecurityStandards }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespaces.app }}
+  labels:
+    kubernetes.io/metadata.name: {{ .Values.namespaces.app }}
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+    {{- if $pss }}
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+    {{- end }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespaces.workers }}
+  labels:
+    kubernetes.io/metadata.name: {{ .Values.namespaces.workers }}
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+    {{- if $pss }}
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+    {{- end }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespaces.sandbox }}
+  labels:
+    kubernetes.io/metadata.name: {{ .Values.namespaces.sandbox }}
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+    {{- if $pss }}
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+    {{- end }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespaces.system }}
+  labels:
+    kubernetes.io/metadata.name: {{ .Values.namespaces.system }}
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+{{- if .Values.observability.enabled }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespaces.observability }}
+  labels:
+    kubernetes.io/metadata.name: {{ .Values.namespaces.observability }}
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+{{- end }}
+{{- end }}

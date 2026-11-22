@@ -1,0 +1,407 @@
+{
+  "uid": "onlyscans-overview",
+  "title": "OnlyScans Platform Overview",
+  "description": "End-to-end observability for OnlyScans: HTTP/gRPC RED metrics with trace exemplars, orchestrator queue & dynamic Kubernetes worker autoscaling, and correlated Loki logs.",
+  "tags": ["onlyscans", "secflow", "appsec", "kubernetes", "observability"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "custom",
+        "query": ".*,edge-gateway,orchestrator,source-ingester,plugin-provisioner,plugin-runtime-internal,plugin-runtime-action,worker-kotlin,worker-sca,sbom-service,ai-service,notify-service,mcp-bridge",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": ".*"
+        },
+        "includeAll": false,
+        "multi": false,
+        "options": [
+          { "selected": true, "text": "All", "value": ".*" },
+          { "selected": false, "text": "edge-gateway", "value": "edge-gateway" },
+          { "selected": false, "text": "orchestrator", "value": "orchestrator" },
+          { "selected": false, "text": "source-ingester", "value": "source-ingester" },
+          { "selected": false, "text": "plugin-provisioner", "value": "plugin-provisioner" },
+          { "selected": false, "text": "plugin-runtime-internal", "value": "plugin-runtime-internal" },
+          { "selected": false, "text": "plugin-runtime-action", "value": "plugin-runtime-action" },
+          { "selected": false, "text": "worker-kotlin", "value": "worker-kotlin" },
+          { "selected": false, "text": "worker-sca", "value": "worker-sca" },
+          { "selected": false, "text": "sbom-service", "value": "sbom-service" },
+          { "selected": false, "text": "ai-service", "value": "ai-service" },
+          { "selected": false, "text": "notify-service", "value": "notify-service" },
+          { "selected": false, "text": "mcp-bridge", "value": "mcp-bridge" }
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Platform KPIs",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Edge HTTP RPS",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 1, "w": 4, "h": 4 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(secflow_http_requests_total[5m])) or vector(0)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 2,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": 0.01 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "area", "colorMode": "value" }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "HTTP 5xx Error Rate",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 4, "y": 1, "w": 4, "h": 4 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum(rate(secflow_http_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(secflow_http_requests_total[5m])), 1e-6)) * 100 or vector(0)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "none", "colorMode": "value" }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Workflow Runs Completed",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 8, "y": 1, "w": 4, "h": 4 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(orchestrator_runs_total) or vector(0)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "purple", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "none", "colorMode": "value" }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Queued / In-Flight Tasks",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 1, "w": 4, "h": 4 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(orchestrator_queue_depth) or vector(0)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 20 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "area", "colorMode": "value" }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Active Connected Workers",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 16, "y": 1, "w": 4, "h": 4 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(orchestrator_active_workers) or vector(0)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "area", "colorMode": "value" }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "K8s Desired Worker Replicas",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 20, "y": 1, "w": 4, "h": 4 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(orchestrator_worker_pool_desired_replicas) or vector(0)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "area", "colorMode": "value" }
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Orchestrator Queue, Dynamic Worker Autoscaling & DAG Execution",
+      "gridPos": { "x": 0, "y": 5, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Queue Depth by Plugin (orchestrator_queue_depth)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 6, "w": 12, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (plugin_id) (orchestrator_queue_depth)",
+          "legendFormat": "{{plugin_id}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 15, "lineWidth": 2 } } }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Worker Pools: Connected vs K8s Desired Replicas",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 6, "w": 12, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (plugin_id) (orchestrator_active_workers)",
+          "legendFormat": "active: {{plugin_id}}"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (pool) (orchestrator_worker_pool_desired_replicas)",
+          "legendFormat": "desired: {{pool}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10, "lineWidth": 2 } } }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Node Execution Duration p95 by Plugin",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 13, "w": 12, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, plugin_id) (rate(orchestrator_node_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{plugin_id}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10, "lineWidth": 2 } } }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "K8s Worker Scale Events & Workflow Run Outcomes",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 13, "w": 12, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (pool, direction) (increase(orchestrator_worker_scale_events_total[15m]))",
+          "legendFormat": "scale {{pool}} ({{direction}})"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (status) (increase(orchestrator_runs_total[15m]))",
+          "legendFormat": "runs {{status}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 60 } } }
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Edge HTTP & Internal gRPC RED Metrics (with Trace Exemplars)",
+      "gridPos": { "x": 0, "y": 20, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "HTTP Requests / sec by Path & Status",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 21, "w": 12, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (path, status) (rate(secflow_http_requests_total{service=~\"$service\"}[5m]))",
+          "legendFormat": "{{path}} [{{status}}]"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 15, "lineWidth": 2 } } }
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "HTTP p95 Latency by Path (Exemplars → Tempo)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 21, "w": 12, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, path) (rate(secflow_http_request_duration_seconds_bucket{service=~\"$service\"}[5m])))",
+          "legendFormat": "p95 {{path}}",
+          "exemplar": true
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10, "lineWidth": 2 } } }
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Internal gRPC RPS by Service & Code",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service, code) (rate(rpc_server_requests_total{service=~\"$service\"}[5m]))",
+          "legendFormat": "{{service}} [{{code}}]"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 15, "lineWidth": 2 } } }
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Internal gRPC p95 Latency by Method (Exemplars → Tempo)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 28, "w": 12, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, service, method) (rate(rpc_server_duration_seconds_bucket{service=~\"$service\"}[5m])))",
+          "legendFormat": "{{service}} {{method}}",
+          "exemplar": true
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10, "lineWidth": 2 } } }
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "Structured JSON Logs (Loki → Tempo Trace Correlation)",
+      "gridPos": { "x": 0, "y": 35, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "WARN / ERROR Log Volume by Service",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "x": 0, "y": 36, "w": 24, "h": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (app, level) (count_over_time({namespace=~\"secflow-.*\", app=~\"$service\"} | json | level=~\"WARN|ERROR\" [5m]))",
+          "legendFormat": "{{app}} ({{level}})"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 65 } } }
+    },
+    {
+      "id": 32,
+      "type": "logs",
+      "title": "SecFlow Live Correlated Logs (click trace_id → Tempo)",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "x": 0, "y": 41, "w": 24, "h": 11 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{namespace=~\"secflow-.*\", app=~\"$service\"} | json"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": true,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      }
+    }
+  ]
+}

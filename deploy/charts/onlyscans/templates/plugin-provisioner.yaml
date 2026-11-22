@@ -1,0 +1,144 @@
+{{- if .Values.pluginProvisioner.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: plugin-provisioner
+  namespace: {{ .Values.namespaces.app }}
+  labels:
+    app: plugin-provisioner
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+automountServiceAccountToken: true
+---
+# Minimal namespace-scoped Role strictly limited to secflow-sandbox (ADR-0010).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secflow-plugin-provisioner
+  namespace: {{ .Values.namespaces.sandbox }}
+  labels:
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secflow-plugin-provisioner
+  namespace: {{ .Values.namespaces.sandbox }}
+  labels:
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: plugin-provisioner
+    namespace: {{ .Values.namespaces.app }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secflow-plugin-provisioner
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plugin-provisioner
+  namespace: {{ .Values.namespaces.app }}
+  labels:
+    app: plugin-provisioner
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.pluginProvisioner.replicas }}
+  selector:
+    matchLabels:
+      app: plugin-provisioner
+  template:
+    metadata:
+      labels:
+        app: plugin-provisioner
+        {{- include "secflow.commonLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: plugin-provisioner
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "secflow.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: plugin-provisioner
+          image: {{ include "secflow.image" (dict "root" . "repo" .Values.pluginProvisioner.imageRepository) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8089
+          env:
+            - name: HTTP_ADDR
+              value: ":8089"
+            - name: PROVISIONER_DRIVER
+              value: {{ .Values.pluginProvisioner.driver | quote }}
+            - name: SECFLOW_ENV
+              value: {{ .Values.global.env | quote }}
+            - name: SANDBOX_NAMESPACE
+              value: {{ .Values.namespaces.sandbox | quote }}
+            - name: ORCHESTRATOR_ADDR
+              value: {{ include "secflow.orchestratorAddr" . | quote }}
+            - name: ORCHESTRATOR_NAMESPACE
+              value: {{ .Values.namespaces.app | quote }}
+            - name: GARAGE_ENDPOINT
+              value: {{ include "secflow.garageEndpoint" . | quote }}
+            - name: GARAGE_NAMESPACE
+              value: {{ .Values.namespaces.system | quote }}
+            - name: PLUGIN_IMAGE_REGISTRY_ALLOWLIST
+              value: {{ .Values.pluginProvisioner.imageRegistryAllowlist | quote }}
+            - name: ENABLE_KEDA
+              value: {{ .Values.pluginProvisioner.enableKeda | quote }}
+            - name: PROMETHEUS_ADDRESS
+              value: {{ .Values.keda.prometheusAddress | quote }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-db
+                  key: DATABASE_URL
+            - name: GARAGE_RO_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.garage.secretName }}
+                  key: ACCESS_KEY_ID
+                  optional: true
+            - name: GARAGE_RO_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.garage.secretName }}
+                  key: SECRET_ACCESS_KEY
+                  optional: true
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ include "secflow.otelEndpoint" . | quote }}
+          securityContext:
+            {{- include "secflow.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.pluginProvisioner.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+{{- end }}

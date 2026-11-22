@@ -44,6 +44,24 @@ var (
 		},
 		[]string{"plugin_id"},
 	)
+
+	// PromQL: orchestrator_worker_pool_desired_replicas{pool="worker-kotlin"}.
+	orchestratorWorkerPoolDesiredReplicas = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "orchestrator_worker_pool_desired_replicas",
+			Help: "Desired replica count reconciled by orchestrator Kubernetes worker scaler per pool.",
+		},
+		[]string{"pool"},
+	)
+
+	// PromQL: sum by (pool, direction) (rate(orchestrator_worker_scale_events_total[5m])).
+	orchestratorWorkerScaleEventsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "orchestrator_worker_scale_events_total",
+			Help: "Total Kubernetes worker pool create/scale-up/scale-down events triggered by orchestrator.",
+		},
+		[]string{"pool", "direction"},
+	)
 )
 
 func init() {
@@ -52,6 +70,8 @@ func init() {
 		orchestratorRunsTotal,
 		orchestratorNodeDuration,
 		orchestratorActiveWorkers,
+		orchestratorWorkerPoolDesiredReplicas,
+		orchestratorWorkerScaleEventsTotal,
 	)
 }
 
@@ -119,4 +139,14 @@ func (s *Server) setActiveWorkers(pluginID string, count int32) {
 		return
 	}
 	orchestratorActiveWorkers.WithLabelValues(pluginID).Set(float64(count))
+}
+
+func recordWorkerPoolScale(pool, direction string, desired int32) {
+	if pool == "" {
+		return
+	}
+	orchestratorWorkerPoolDesiredReplicas.WithLabelValues(pool).Set(float64(desired))
+	if direction != "" {
+		orchestratorWorkerScaleEventsTotal.WithLabelValues(pool, direction).Inc()
+	}
 }

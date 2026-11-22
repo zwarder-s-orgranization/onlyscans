@@ -52,13 +52,23 @@ func Ensure(ctx context.Context) error {
 	}
 	access, secret, ok := loadStored()
 	if !ok {
+		_, memAccess, memSecret := credentials()
+		if memAccess != "" && memSecret != "" {
+			access, secret, ok = memAccess, memSecret, true
+		}
+	}
+	if !ok {
 		var err error
 		access, secret, err = createKey(ctx, base, token)
 		if err != nil {
 			return err
 		}
-		if err := saveCreds(access, secret); err != nil {
-			return err
+		if saveErr := saveCreds(access, secret); saveErr != nil {
+			// When GARAGE_CRED_FILE is not writable (e.g., Kubernetes Jobs using Secret sync),
+			// continue if credentials will be synced externally via K8s Secrets.
+			if os.Getenv("GARAGE_K8S_SECRET_NAME") == "" {
+				return saveErr
+			}
 		}
 	}
 	remember(access, secret)

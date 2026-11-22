@@ -40,7 +40,15 @@ func main() {
 	b := newDefaultBridge()
 	httpserver.Start(ctx, envutil.Get("HTTP_ADDR", ":8088"))
 	m := mcpToolManifest()
-	if err := workerclient.Run(ctx, envutil.Get("ORCHESTRATOR_ADDR", "orchestrator:50051"), "mcp-bridge", []*secflowv1.PluginManifest{m}, b.callTool); err != nil && ctx.Err() == nil {
+	workerID := envutil.Get("WORKER_INSTANCE_ID", "")
+	if workerID == "" {
+		if host, hErr := os.Hostname(); hErr == nil && host != "" {
+			workerID = "mcp-bridge-" + host
+		} else {
+			workerID = "mcp-bridge"
+		}
+	}
+	if err := workerclient.Run(ctx, envutil.Get("ORCHESTRATOR_ADDR", "orchestrator:50051"), workerID, []*secflowv1.PluginManifest{m}, b.callTool); err != nil && ctx.Err() == nil {
 		slog.Error("worker", "err", err)
 		os.Exit(1)
 	}

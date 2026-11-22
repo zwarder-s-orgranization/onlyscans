@@ -92,8 +92,15 @@ func (s *Server) startRunWithTrigger(ctx context.Context, req *secflowv1.StartRu
 	if wf == nil {
 		return nil, "", status.Error(codes.NotFound, "workflow not found")
 	}
-	if issues := append(engine.Validate(toEngine(wf.GetGraph())), extraGraphIssues(wf.GetGraph())...); hasError(issues) {
-		return nil, "", status.Error(codes.InvalidArgument, issues[0].Message)
+	if issues := s.validateGraph(ctx, req.GetActor(), wf.GetGraph()); hasProtoValidationError(issues) {
+		for _, iss := range issues {
+			if iss.GetSeverity() == secflowv1.ValidationSeverity_VALIDATION_SEVERITY_ERROR {
+				if iss.GetNodeId() != "" {
+					return nil, "", status.Errorf(codes.InvalidArgument, "%s (node %s): %s", iss.GetCode(), iss.GetNodeId(), iss.GetMessage())
+				}
+				return nil, "", status.Errorf(codes.InvalidArgument, "%s: %s", iss.GetCode(), iss.GetMessage())
+			}
+		}
 	}
 	runID := id("run")
 	tp := obs.InjectTraceparent(ctx)
@@ -550,10 +557,10 @@ func (s *Server) RerunFromNode(ctx context.Context, req *secflowv1.RerunFromNode
 		s.storeTraceLocked(st, nid, tr)
 		n := nodeByID[nid]
 		findingsEmitted := 0
-		if engine.IsAnalyzer(n.PluginID) && len(tr.Output.Findings) > 0 {
+		if s.isAnalyzerPlugin(n.PluginID) && len(tr.Output.Findings) > 0 {
 			findingsEmitted = len(tr.Output.Findings)
 		}
-		if n.PluginID == "gate.policy" {
+		if n.PluginID == "gate.policy" || (tr.Output.Gate != nil && tr.Output.Gate.NodeID == nid && s.pluginCategory(n.PluginID) == secflowv1.PluginCategory_PLUGIN_CATEGORY_LOGIC) {
 			fallbackPort := ""
 			if len(tr.Ports) > 0 {
 				fallbackPort = tr.Ports[0]
@@ -1389,6 +1396,11 @@ func (s *Server) persistNodeArtifacts(ctx context.Context, runID, nodeID string,
 	if tr.Output.Vars != nil && tr.Output.Vars["sbom"] != "" {
 		if err := blobstore.Put(artCtx, "secflow-sbom", fmt.Sprintf("runs/%s/sbom.cdx.json", runID), []byte(tr.Output.Vars["sbom"])); err != nil {
 			slog.Warn("put run sbom artifact", "run_id", runID, "err", err)
+		}
+	}
+	if tr.ArtifactKey != "" && len(tr.ArtifactContent) > 0 {
+		if err := blobstore.Put(artCtx, "secflow-artifacts", tr.ArtifactKey, tr.ArtifactContent); err != nil {
+			slog.Warn("put external report artifact", "run_id", runID, "node_id", nodeID, "key", tr.ArtifactKey, "err", err)
 		}
 	}
 }

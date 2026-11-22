@@ -131,17 +131,6 @@ func main() {
 		ai:           secflowv1.NewAIServiceClient(aiConn),
 		notify:       secflowv1.NewNotifyServiceClient(notifyConn),
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", gw.healthz)
-	mux.HandleFunc("/readyz", gw.readyz)
-	mux.Handle("/metrics", promhttp.Handler())
-	mux.HandleFunc("/graphql", gw.graphql)
-	mux.HandleFunc("/upload", gw.upload)
-	mux.HandleFunc("/catalogs/upload", gw.catalogUpload)
-	mux.HandleFunc("/mcp", gw.mcpServerHTTP)
-	mux.HandleFunc("/webhooks/git/", gw.webhook)
-	mux.HandleFunc("/webhooks/inspector/", gw.inspector)
-	mux.HandleFunc("/runs/", gw.runFile)
 	if metricsAddr := strings.TrimSpace(os.Getenv("METRICS_ADDR")); metricsAddr != "" {
 		httpserver.Start(ctx, metricsAddr)
 	}
@@ -149,7 +138,7 @@ func main() {
 	slog.Info("edge-gateway", "addr", addr)
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           obs.HTTPMiddleware("edge-gateway", withCORS(mux)),
+		Handler:           gw.handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      120 * time.Second,
@@ -186,6 +175,7 @@ type gateway struct {
 	inspUpdated    map[string]time.Time
 	inspTTL        time.Duration
 	subs           map[string][]chan map[string]any
+	aiCfg          *aiProviderConfigDTO
 	wf             secflowv1.WorkflowServiceClient
 	runs           secflowv1.RunServiceClient
 	plugs          secflowv1.PluginRegistryServiceClient
@@ -199,19 +189,41 @@ type gateway struct {
 	jwksAt         time.Time
 }
 
+func (g *gateway) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", g.healthz)
+	mux.HandleFunc("/readyz", g.readyz)
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/graphql", g.graphql)
+	mux.HandleFunc("/upload", g.upload)
+	mux.HandleFunc("/catalogs/upload", g.catalogUpload)
+	mux.HandleFunc("/mcp", g.mcpServerHTTP)
+	mux.HandleFunc("/webhooks/git/", g.webhook)
+	mux.HandleFunc("/webhooks/inspector/", g.inspector)
+	mux.HandleFunc("/runs/", g.runFile)
+	mux.HandleFunc("/api/ai/provider", g.aiProviderConfig)
+	mux.HandleFunc("/api/ai/provider/test", g.aiProviderTest)
+	mux.HandleFunc("/api/ai/models", g.aiProviderModels)
+	return obs.HTTPMiddleware("edge-gateway", withCORS(mux))
+}
+
+func traceparentUnaryInterceptor() grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		if obs.TraceIDFromContext(ctx) == "" {
+			if tp, ok := ctx.Value(traceKey{}).(string); ok && tp != "" {
+				ctx = metadata.AppendToOutgoingContext(ctx, "traceparent", tp)
+			}
+		}
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
+}
+
 func dial(addr string) *grpc.ClientConn {
 	conn, err := grpc.NewClient(
 		addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		obs.GRPCDialOption(),
-		grpc.WithUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-			if obs.TraceIDFromContext(ctx) == "" {
-				if tp, ok := ctx.Value(traceKey{}).(string); ok && tp != "" {
-					ctx = metadata.AppendToOutgoingContext(ctx, "traceparent", tp)
-				}
-			}
-			return invoker(ctx, method, req, reply, cc, opts...)
-		}),
+		grpc.WithUnaryInterceptor(traceparentUnaryInterceptor()),
 	)
 	if err != nil {
 		slog.Error("dial", "addr", addr, "err", err)

@@ -59,6 +59,13 @@ func main() {
 	}
 	srv := newServer()
 	srv.pool = pool
+	scaler, scalerInterval, err := buildWorkerScaler()
+	if err != nil {
+		slog.Error("worker scaler init", "err", err)
+		os.Exit(1)
+	}
+	srv.workerScaler = scaler
+	slog.Info("worker scaler configured", "driver", scaler.Driver())
 	if ingAddr := os.Getenv("INGESTER_ADDR"); ingAddr != "" {
 		conn, err := grpc.NewClient(ingAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), obs.GRPCDialOption())
 		if err != nil {
@@ -69,6 +76,8 @@ func main() {
 		srv.ingest = secflowv1.NewSourceIngesterServiceClient(conn)
 	}
 	srv.loadState(ctx)
+	srv.startPluginListener(ctx)
+	srv.startWorkerScaler(ctx, scalerInterval)
 	srv.startPump(ctx)
 	srv.startScheduler(ctx)
 	gs := grpc.NewServer(obs.GRPCServerOptions("orchestrator")...)

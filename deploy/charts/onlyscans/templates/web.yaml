@@ -1,0 +1,106 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: {{ .Values.namespaces.app }}
+  labels:
+    app: web
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+spec:
+  type: {{ .Values.web.service.type | default "ClusterIP" }}
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      {{- if and (eq (.Values.web.service.type | default "ClusterIP") "NodePort") .Values.web.service.nodePort }}
+      nodePort: {{ .Values.web.service.nodePort }}
+      {{- end }}
+  selector:
+    app: web
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: {{ .Values.namespaces.app }}
+  labels:
+    app: web
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+        {{- include "secflow.commonLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web
+          image: {{ include "secflow.image" (dict "root" . "repo" .Values.web.imageRepository) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: NEXT_PUBLIC_API_URL
+              value: {{ default .Values.global.publicUrl .Values.web.apiUrl | quote }}
+            - name: PORT
+              value: "3000"
+            - name: HOSTNAME
+              value: "0.0.0.0"
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+{{- if .Values.web.hpa.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web
+  namespace: {{ .Values.namespaces.app }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web
+  minReplicas: {{ .Values.web.hpa.minReplicas }}
+  maxReplicas: {{ .Values.web.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.web.hpa.targetCPUUtilizationPercentage }}
+{{- end }}

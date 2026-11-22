@@ -196,6 +196,101 @@ export async function uploadCatalog(
   return (await res.json()) as UploadCatalogResult;
 }
 
+export interface AiProviderConfigResponse {
+  mode: "openai-compatible" | "local-ollama" | "deterministic-only";
+  endpointUrl: string;
+  model: string;
+  secretRef: string;
+  timeoutSec: number;
+  strictGrounding: boolean;
+  allowTextToWorkflow: boolean;
+  status: "HEALTHY" | "DEGRADED" | "DISABLED";
+  lastLatencyMs: number;
+  lastCheckedAt: string;
+  errorMessage?: string;
+}
+
+export interface AiModelOption {
+  id: string;
+  name?: string;
+  ownedBy?: string;
+  contextLength?: number;
+}
+
+export interface AiModelsProbeResponse {
+  ok: boolean;
+  statusCode: number;
+  latencyMs: number;
+  normalizedBaseUrl: string;
+  suggestedBaseUrl?: string;
+  models: AiModelOption[];
+  modelFound?: boolean;
+  error?: string;
+}
+
+export async function getAiProviderConfig(): Promise<AiProviderConfigResponse> {
+  const res = await fetch(`${apiBase()}/api/ai/provider`, {
+    method: "GET",
+    headers: authHeaders({ auth: true, json: false }),
+  });
+  if (!res.ok) {
+    throw await parseHttpError(res);
+  }
+  return (await res.json()) as AiProviderConfigResponse;
+}
+
+export async function saveAiProviderConfig(payload: {
+  mode: "openai-compatible" | "local-ollama" | "deterministic-only";
+  endpointUrl: string;
+  model: string;
+  secretRef: string;
+  timeoutSec: number;
+  allowTextToWorkflow: boolean;
+}): Promise<AiProviderConfigResponse> {
+  const res = await fetch(`${apiBase()}/api/ai/provider`, {
+    method: "POST",
+    headers: authHeaders({ auth: true, json: true }),
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw await parseHttpError(res);
+  }
+  return (await res.json()) as AiProviderConfigResponse;
+}
+
+export async function testAiProviderConnection(payload: {
+  mode: "openai-compatible" | "local-ollama" | "deterministic-only";
+  endpointUrl: string;
+  model?: string;
+  secretRef?: string;
+}): Promise<AiModelsProbeResponse> {
+  const res = await fetch(`${apiBase()}/api/ai/provider/test`, {
+    method: "POST",
+    headers: authHeaders({ auth: true, json: true }),
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw await parseHttpError(res);
+  }
+  return (await res.json()) as AiModelsProbeResponse;
+}
+
+export async function fetchAiProviderModels(payload: {
+  baseUrl: string;
+  secretRef?: string;
+  mode?: "openai-compatible" | "local-ollama" | "deterministic-only";
+}): Promise<AiModelsProbeResponse> {
+  const res = await fetch(`${apiBase()}/api/ai/models`, {
+    method: "POST",
+    headers: authHeaders({ auth: true, json: true }),
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw await parseHttpError(res);
+  }
+  return (await res.json()) as AiModelsProbeResponse;
+}
+
 function filenameFromDisposition(header: string | null, fallback: string): string {
   if (!header) return fallback;
   const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(header);

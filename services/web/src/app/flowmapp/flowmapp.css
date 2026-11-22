@@ -41,12 +41,7 @@
 }
 
 .fm-select {
-  appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23636f7b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 0.75rem center;
-  background-size: 16px 16px;
-  padding-right: 2.25rem;
+  padding-right: 1.75rem;
 }
 
 .fm-btn-ink {
@@ -68,7 +63,7 @@
 
 .fm-btn-signal {
   background-color: #0066e6;
-  color: var(--fm-paper);
+  color: #ffffff;
   border-radius: 1600px;
   box-shadow: var(--fm-cta-glow);
   transition: background-color 160ms var(--ease-out-quart), transform 140ms var(--ease-out-quart);
@@ -107,6 +102,10 @@
 .fm-float {
   background-color: var(--fm-paper);
   box-shadow: var(--fm-float-shadow);
+}
+
+.flowmapp-root .react-flow {
+  color-scheme: light;
 }
 
 .flowmapp-root .react-flow__pane {
@@ -158,6 +157,28 @@
 .flowmapp-root .react-flow__edge.selected .react-flow__edge-path {
   stroke: var(--fm-voltage) !important;
   stroke-width: 2.5 !important;
+}
+
+.flowmapp-root .fm-minimap-shell .react-flow__minimap {
+  position: static;
+  margin: 0;
+  background: transparent;
+}
+
+.flowmapp-root .fm-minimap-shell .react-flow__minimap-svg {
+  display: block;
+  cursor: pointer;
+}
+
+.flowmapp-root .fm-minimap-shell .react-flow__minimap-node {
+  cursor: pointer;
+  transition: opacity 140ms var(--ease-out-quart);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .flowmapp-root .fm-minimap-shell .react-flow__minimap-node:hover {
+    opacity: 0.85;
+  }
 }
 
 .fm-scroll::-webkit-scrollbar {
@@ -234,4 +255,421 @@
     animation: none;
     background: var(--fm-signal);
   }
+}
+
+/* ---------- Ink Bleed WebGL2 Overlay ---------- */
+
+.ink-overlay-canvas {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+}
+
+.ink-overlay-canvas.is-active {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Unified code / JSON output surface across light & dark themes */
+.fm-code-block {
+  background-color: #f8fafc;
+  color: #0f172a;
+  border: 1px solid rgba(140, 155, 170, 0.35);
+}
+
+html[data-theme="dark"] .fm-code-block {
+  background-color: #0a0d14;
+  color: #e2e8f0;
+  border-color: rgba(148, 163, 184, 0.22);
+}
+
+html.theme-fade,
+html.theme-fade body,
+html.theme-fade header,
+html.theme-fade main,
+html.theme-fade section,
+html.theme-fade article,
+html.theme-fade aside,
+html.theme-fade form,
+html.theme-fade button,
+html.theme-fade input,
+html.theme-fade select,
+html.theme-fade textarea {
+  transition:
+    background-color 360ms var(--ease-out-quart),
+    color 360ms var(--ease-out-quart),
+    border-color 360ms var(--ease-out-quart);
+}
+
+/* ---------- Dark Theme (SecFlow Obsidian Blueprint) ---------- */
+
+html[data-theme="dark"] .flowmapp-root {
+  --fm-signal: #3b9eff;
+  --fm-voltage: #66b4ff;
+  --fm-sky: #173357;
+  --fm-pencil: #3a4659;
+  --fm-graphite: #9aa7b8;
+  --fm-ink: #f1f5f9;
+  --fm-carbon: #dbe4ef;
+  --fm-paper: #0a0d14;
+  --fm-surface: #111622;
+  --fm-surface-elevated: #171e2d;
+  --fm-pastel-yellow: #3b3016;
+  --fm-pastel-mint: #123325;
+  --fm-pastel-pink: #3d1824;
+  --fm-pastel-peach: #3d2415;
+  --fm-float-shadow: 0px 10px 30px 0px rgba(0, 0, 0, 0.55);
+  --fm-cta-glow: 0px 0px 22px 0px rgba(59, 158, 255, 0.32);
+
+  background-color: var(--fm-paper);
+  color: var(--fm-ink);
+  color-scheme: dark;
+}
+
+html[data-theme="dark"] .flowmapp-root ::selection {
+  background-color: rgba(59, 158, 255, 0.35);
+  color: #ffffff;
+}
+
+html[data-theme="dark"] .fm-brand-logo {
+  filter: brightness(0) invert(1);
+}
+
+html[data-theme="dark"] .fm-btn-ink {
+  background-color: #f1f5f9;
+  color: #0a0d14;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  html[data-theme="dark"] .fm-btn-ink:hover {
+    background-color: #ffffff;
+  }
+}
+
+html[data-theme="dark"] .fm-btn-signal {
+  background-color: #1d74f5;
+  color: #ffffff;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  html[data-theme="dark"] .fm-btn-signal:hover {
+    background-color: #3b8bff;
+    color: #ffffff;
+  }
+}
+
+html[data-theme="dark"] .fm-btn-outline {
+  background-color: #111622;
+  color: #e2e8f0;
+  border-color: #334155;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  html[data-theme="dark"] .fm-btn-outline:hover {
+    border-color: var(--fm-signal);
+    color: #ffffff;
+    background-color: #172133;
+  }
+}
+
+html[data-theme="dark"] .fm-float {
+  background-color: #111622;
+  box-shadow: var(--fm-float-shadow);
+}
+
+/* Semantic remapping of Flowmapp light-mode Tailwind hex utilities in dark mode */
+html[data-theme="dark"] .bg-\[\#ffffff\],
+html[data-theme="dark"] .bg-\[\#ffffff\]\/70,
+html[data-theme="dark"] .bg-\[\#ffffff\]\/80,
+html[data-theme="dark"] .bg-\[\#ffffff\]\/85,
+html[data-theme="dark"] .bg-\[\#ffffff\]\/90,
+html[data-theme="dark"] .bg-\[\#ffffff\]\/95,
+html[data-theme="dark"] .focus\:bg-\[\#ffffff\]:focus,
+html[data-theme="dark"] .bg-white {
+  background-color: #0e131d !important;
+}
+
+html[data-theme="dark"] header.bg-\[\#ffffff\],
+html[data-theme="dark"] .flowmapp-root > div.bg-\[\#ffffff\],
+html[data-theme="dark"] .flowmapp-root > div > div.bg-\[\#ffffff\] {
+  background-color: #0a0d14 !important;
+}
+
+html[data-theme="dark"] .bg-\[\#f6faff\],
+html[data-theme="dark"] .bg-\[\#f6faff\]\/65,
+html[data-theme="dark"] .bg-\[\#f8fafc\],
+html[data-theme="dark"] .bg-\[\#f8fafc\]\/50,
+html[data-theme="dark"] .bg-\[\#f8fafc\]\/60,
+html[data-theme="dark"] .bg-\[\#f8fafc\]\/80,
+html[data-theme="dark"] .bg-\[\#f1f5f9\],
+html[data-theme="dark"] .bg-\[\#f1f5f9\]\/60,
+html[data-theme="dark"] .bg-\[\#f9fafb\],
+html[data-theme="dark"] .bg-\[\#f0f7ff\],
+html[data-theme="dark"] .bg-\[\#edf4ff\],
+html[data-theme="dark"] .bg-\[\#e9ecef\] {
+  background-color: #131a27 !important;
+}
+
+html[data-theme="dark"] .hover\:bg-\[\#f6faff\]:hover,
+html[data-theme="dark"] .hover\:bg-\[\#f6faff\]\/65:hover,
+html[data-theme="dark"] .hover\:bg-\[\#f8fafc\]:hover,
+html[data-theme="dark"] .hover\:bg-\[\#f1f5f9\]:hover,
+html[data-theme="dark"] .hover\:bg-\[\#f1f3f5\]:hover,
+html[data-theme="dark"] .hover\:bg-\[\#c5e0fb\]\/35:hover,
+html[data-theme="dark"] .hover\:bg-\[\#c5e0fb\]\/20:hover {
+  background-color: #182235 !important;
+}
+
+html[data-theme="dark"] .hover\:bg-\[\#ffd6e0\]:hover,
+html[data-theme="dark"] .hover\:bg-\[\#ffd6e0\]\/50:hover,
+html[data-theme="dark"] .hover\:bg-\[\#ffd6e0\]\/45:hover,
+html[data-theme="dark"] .hover\:bg-\[\#ffd6e0\]\/35:hover {
+  background-color: rgba(244, 63, 94, 0.26) !important;
+}
+
+html[data-theme="dark"] .hover\:bg-\[\#fff3c4\]:hover {
+  background-color: rgba(245, 158, 11, 0.26) !important;
+}
+
+html[data-theme="dark"] .text-\[\#000000\],
+html[data-theme="dark"] .text-black {
+  color: #f1f5f9 !important;
+}
+
+html[data-theme="dark"] .hover\:text-\[\#000000\]:hover {
+  color: #ffffff !important;
+}
+
+html[data-theme="dark"] .text-\[\#222222\] {
+  color: #dbe4ef !important;
+}
+
+html[data-theme="dark"] .text-\[\#636f7b\],
+html[data-theme="dark"] .text-\[\#495057\],
+html[data-theme="dark"] .text-\[\#475569\],
+html[data-theme="dark"] .text-\[\#53606e\] {
+  color: #9aa7b8 !important;
+}
+
+html[data-theme="dark"] .text-\[\#0050ff\],
+html[data-theme="dark"] .text-\[\#0066e6\],
+html[data-theme="dark"] .text-\[\#0080ff\] {
+  color: #60a5fa !important;
+}
+
+html[data-theme="dark"] .hover\:text-\[\#0050ff\]:hover,
+html[data-theme="dark"] .hover\:text-\[\#0080ff\]:hover,
+html[data-theme="dark"] .group:hover .group-hover\:text-\[\#0066e6\] {
+  color: #93c5fd !important;
+}
+
+html[data-theme="dark"] .text-\[\#dc2626\],
+html[data-theme="dark"] .text-\[\#b42318\],
+html[data-theme="dark"] .text-\[\#b4233a\],
+html[data-theme="dark"] .text-\[\#7a2835\],
+html[data-theme="dark"] .text-\[\#5c1620\] {
+  color: #fca5a5 !important;
+}
+
+html[data-theme="dark"] .hover\:text-\[\#842029\]:hover,
+html[data-theme="dark"] .hover\:text-\[\#dc2626\]:hover {
+  color: #fda4af !important;
+}
+
+html[data-theme="dark"] .bg-\[\#000000\] {
+  background-color: #e2e8f0 !important;
+}
+
+html[data-theme="dark"] .bg-\[\#000000\].text-\[\#ffffff\],
+html[data-theme="dark"] .bg-\[\#000000\] .text-\[\#ffffff\],
+html[data-theme="dark"] .bg-\[\#000000\] .text-\[\#c5e0fb\] {
+  color: #0a0d14 !important;
+}
+
+html[data-theme="dark"] .bg-\[\#000000\] .bg-\[\#ffffff\]\/20 {
+  background-color: rgba(10, 13, 20, 0.14) !important;
+  color: #0a0d14 !important;
+}
+
+html[data-theme="dark"] .bg-\[\#000000\] .bg-\[\#c8f0d8\]\/75 {
+  background-color: #bbf7d0 !important;
+  color: #052e16 !important;
+}
+
+html[data-theme="dark"] .hover\:border-\[\#000000\]:hover {
+  border-color: #94a3b8 !important;
+}
+
+html[data-theme="dark"] .border-\[\#8c9baa\],
+html[data-theme="dark"] .border-\[\#8c9baa\]\/80,
+html[data-theme="dark"] .border-\[\#8c9baa\]\/75,
+html[data-theme="dark"] .border-\[\#8c9baa\]\/70,
+html[data-theme="dark"] .border-\[\#8c9baa\]\/65,
+html[data-theme="dark"] .border-\[\#8c9baa\]\/60,
+html[data-theme="dark"] .border-\[\#8c9baa\]\/55,
+html[data-theme="dark"] .border-\[\#8c9baa\]\/50,
+html[data-theme="dark"] .border-\[\#8c9baa\]\/45,
+html[data-theme="dark"] .border-\[\#8c9baa\]\/40,
+html[data-theme="dark"] .border-\[\#8c9baa\]\/35,
+html[data-theme="dark"] .border-\[\#8c9baa\]\/30,
+html[data-theme="dark"] .border-\[\#8c9baa\]\/25,
+html[data-theme="dark"] .border-\[\#000000\]\/15 {
+  border-color: rgba(148, 163, 184, 0.24) !important;
+}
+
+html[data-theme="dark"] .divide-\[\#8c9baa\]\/35 > :not(:last-child),
+html[data-theme="dark"] .divide-\[\#8c9baa\]\/30 > :not(:last-child),
+html[data-theme="dark"] .divide-\[\#8c9baa\]\/25 > :not(:last-child) {
+  border-color: rgba(148, 163, 184, 0.18) !important;
+}
+
+/* Pastel status & trigger badges in dark mode */
+html[data-theme="dark"] .bg-\[\#c5e0fb\],
+html[data-theme="dark"] .bg-\[\#c5e0fb\]\/20,
+html[data-theme="dark"] .bg-\[\#c5e0fb\]\/30,
+html[data-theme="dark"] .bg-\[\#c5e0fb\]\/35,
+html[data-theme="dark"] .bg-\[\#c5e0fb\]\/40,
+html[data-theme="dark"] .bg-\[\#c5e0fb\]\/45,
+html[data-theme="dark"] .bg-\[\#c5e0fb\]\/50,
+html[data-theme="dark"] .bg-\[\#c5e0fb\]\/55,
+html[data-theme="dark"] .bg-\[\#c5e0fb\]\/60,
+html[data-theme="dark"] .bg-\[\#c5e0fb\]\/65,
+html[data-theme="dark"] .bg-\[\#c5e0fb\]\/70,
+html[data-theme="dark"] .bg-\[\#c5e0fb\]\/75 {
+  background-color: rgba(59, 158, 255, 0.18) !important;
+}
+
+html[data-theme="dark"] .text-\[\#004a99\] {
+  color: #7cc4ff !important;
+}
+
+html[data-theme="dark"] .bg-\[\#c8f0d8\],
+html[data-theme="dark"] .bg-\[\#c8f0d8\]\/30,
+html[data-theme="dark"] .bg-\[\#c8f0d8\]\/35,
+html[data-theme="dark"] .bg-\[\#c8f0d8\]\/40,
+html[data-theme="dark"] .bg-\[\#c8f0d8\]\/45,
+html[data-theme="dark"] .bg-\[\#c8f0d8\]\/50,
+html[data-theme="dark"] .bg-\[\#c8f0d8\]\/70,
+html[data-theme="dark"] .bg-\[\#c8f0d8\]\/75,
+html[data-theme="dark"] .bg-\[\#f2fbf5\] {
+  background-color: rgba(34, 197, 94, 0.14) !important;
+}
+
+html[data-theme="dark"] .text-\[\#0f5132\] {
+  color: #6ee7b7 !important;
+}
+
+html[data-theme="dark"] .bg-\[\#fff3c4\],
+html[data-theme="dark"] .bg-\[\#fff3c4\]\/45,
+html[data-theme="dark"] .bg-\[\#fff3c4\]\/50,
+html[data-theme="dark"] .bg-\[\#fff3c4\]\/55,
+html[data-theme="dark"] .bg-\[\#fff3c4\]\/60,
+html[data-theme="dark"] .bg-\[\#fff3c4\]\/65,
+html[data-theme="dark"] .bg-\[\#fff3c4\]\/70,
+html[data-theme="dark"] .bg-\[\#fff3c4\]\/75,
+html[data-theme="dark"] .bg-\[\#fff3c4\]\/85,
+html[data-theme="dark"] .bg-\[\#fffdf5\] {
+  background-color: rgba(245, 158, 11, 0.16) !important;
+}
+
+html[data-theme="dark"] .text-\[\#7c4a03\],
+html[data-theme="dark"] .text-\[\#664d03\] {
+  color: #fcd34d !important;
+}
+
+html[data-theme="dark"] .bg-\[\#ffd6e0\],
+html[data-theme="dark"] .bg-\[\#ffd6e0\]\/35,
+html[data-theme="dark"] .bg-\[\#ffd6e0\]\/40,
+html[data-theme="dark"] .bg-\[\#ffd6e0\]\/45,
+html[data-theme="dark"] .bg-\[\#ffd6e0\]\/50,
+html[data-theme="dark"] .bg-\[\#ffd6e0\]\/55,
+html[data-theme="dark"] .bg-\[\#ffd6e0\]\/65,
+html[data-theme="dark"] .bg-\[\#ffd6e0\]\/70,
+html[data-theme="dark"] .bg-\[\#ffd6e0\]\/75,
+html[data-theme="dark"] .bg-\[\#fff5f7\] {
+  background-color: rgba(244, 63, 94, 0.2) !important;
+}
+
+html[data-theme="dark"] .text-\[\#842029\] {
+  color: #fda4af !important;
+}
+
+html[data-theme="dark"] .bg-\[\#ffe0c4\] {
+  background-color: rgba(249, 115, 22, 0.2) !important;
+}
+
+html[data-theme="dark"] .bg-\[\#fffafb\] {
+  background-color: #1f1116 !important;
+}
+
+/* Keep dark ink icons & text legible inside inline light-pastel circles & status chips */
+html[data-theme="dark"] [style*="background-color"] .text-\[\#000000\],
+html[data-theme="dark"] [style*="background-color"].text-\[\#000000\],
+html[data-theme="dark"] [style*="background-color"] svg {
+  color: #0a0d14 !important;
+}
+
+/* Inputs & form controls in dark mode */
+html[data-theme="dark"] input,
+html[data-theme="dark"] textarea,
+html[data-theme="dark"] select {
+  background-color: #111622;
+  color: #f1f5f9;
+}
+
+html[data-theme="dark"] input:disabled,
+html[data-theme="dark"] textarea:disabled,
+html[data-theme="dark"] select:disabled {
+  background-color: #131a27 !important;
+  color: #64748b !important;
+}
+
+html[data-theme="dark"] input::placeholder,
+html[data-theme="dark"] textarea::placeholder {
+  color: #64748b;
+}
+
+/* React Flow canvas surfaces & controls in dark mode */
+html[data-theme="dark"] .flowmapp-root .react-flow,
+html[data-theme="dark"] .react-flow {
+  background-color: #0a0d14;
+  color-scheme: dark;
+}
+
+html[data-theme="dark"] .react-flow__edge-textbg {
+  fill: #111622 !important;
+}
+
+html[data-theme="dark"] .react-flow__edge-text {
+  fill: #e2e8f0 !important;
+}
+
+html[data-theme="dark"] .react-flow__background pattern circle {
+  fill: rgba(148, 163, 184, 0.28) !important;
+}
+
+html[data-theme="dark"] .react-flow__controls {
+  background: #111622;
+  border-color: rgba(148, 163, 184, 0.24);
+}
+
+html[data-theme="dark"] .react-flow__controls-button {
+  background: #111622;
+  border-bottom-color: rgba(148, 163, 184, 0.18);
+  color: #dbe4ef;
+}
+
+html[data-theme="dark"] .react-flow__controls-button:hover {
+  background: #182235;
+  color: var(--fm-signal);
+}
+
+html[data-theme="dark"] .fm-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.32);
 }

@@ -23,18 +23,7 @@ const (
 )
 
 // WorkerServiceClient is the client API for WorkerService service.
-//
-// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type WorkerServiceClient interface {
-	// Long-lived bidirectional stream:
-	//  1. Worker sends RegisterManifest (handshake).
-	//  2. Orchestrator verifies scanner deny-list (blocks semgrep/gitleaks/trivy/detekt-security)
-	//     and replies with ManifestAck (accepted or rejected with reason).
-	//  3. Orchestrator pushes leased NodeTask messages (acquired via PG FOR UPDATE SKIP LOCKED)
-	//     carrying an orchestrator-signed task_lease_token for least-privilege SecretService access.
-	//  4. Worker sends Heartbeat to extend lease_until, optional TaskProgress, and CompleteTask
-	//     with idempotent node_run_id.
-	//  5. Orchestrator may send CancelTask (run cancelled / timeout) or DrainRequest.
 	Connect(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ConnectRequest, ConnectResponse], error)
 }
 
@@ -56,31 +45,14 @@ func (c *workerServiceClient) Connect(ctx context.Context, opts ...grpc.CallOpti
 	return x, nil
 }
 
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WorkerService_ConnectClient = grpc.BidiStreamingClient[ConnectRequest, ConnectResponse]
 
 // WorkerServiceServer is the server API for WorkerService service.
-// All implementations must embed UnimplementedWorkerServiceServer
-// for forward compatibility.
 type WorkerServiceServer interface {
-	// Long-lived bidirectional stream:
-	//  1. Worker sends RegisterManifest (handshake).
-	//  2. Orchestrator verifies scanner deny-list (blocks semgrep/gitleaks/trivy/detekt-security)
-	//     and replies with ManifestAck (accepted or rejected with reason).
-	//  3. Orchestrator pushes leased NodeTask messages (acquired via PG FOR UPDATE SKIP LOCKED)
-	//     carrying an orchestrator-signed task_lease_token for least-privilege SecretService access.
-	//  4. Worker sends Heartbeat to extend lease_until, optional TaskProgress, and CompleteTask
-	//     with idempotent node_run_id.
-	//  5. Orchestrator may send CancelTask (run cancelled / timeout) or DrainRequest.
 	Connect(grpc.BidiStreamingServer[ConnectRequest, ConnectResponse]) error
 	mustEmbedUnimplementedWorkerServiceServer()
 }
 
-// UnimplementedWorkerServiceServer must be embedded to have
-// forward compatible implementations.
-//
-// NOTE: this should be embedded by value instead of pointer to avoid a nil
-// pointer dereference when methods are called.
 type UnimplementedWorkerServiceServer struct{}
 
 func (UnimplementedWorkerServiceServer) Connect(grpc.BidiStreamingServer[ConnectRequest, ConnectResponse]) error {
@@ -89,18 +61,11 @@ func (UnimplementedWorkerServiceServer) Connect(grpc.BidiStreamingServer[Connect
 func (UnimplementedWorkerServiceServer) mustEmbedUnimplementedWorkerServiceServer() {}
 func (UnimplementedWorkerServiceServer) testEmbeddedByValue()                       {}
 
-// UnsafeWorkerServiceServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to WorkerServiceServer will
-// result in compilation errors.
 type UnsafeWorkerServiceServer interface {
 	mustEmbedUnimplementedWorkerServiceServer()
 }
 
 func RegisterWorkerServiceServer(s grpc.ServiceRegistrar, srv WorkerServiceServer) {
-	// If the following call pancis, it indicates UnimplementedWorkerServiceServer was
-	// embedded by pointer and is nil.  This will cause panics if an
-	// unimplemented method is ever invoked, so we test this at initialization
-	// time to prevent it from happening at runtime later due to I/O.
 	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
 		t.testEmbeddedByValue()
 	}
@@ -111,12 +76,8 @@ func _WorkerService_Connect_Handler(srv interface{}, stream grpc.ServerStream) e
 	return srv.(WorkerServiceServer).Connect(&grpc.GenericServerStream[ConnectRequest, ConnectResponse]{ServerStream: stream})
 }
 
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WorkerService_ConnectServer = grpc.BidiStreamingServer[ConnectRequest, ConnectResponse]
 
-// WorkerService_ServiceDesc is the grpc.ServiceDesc for WorkerService service.
-// It's only intended for direct use with grpc.RegisterService,
-// and not to be introspected or modified (even as a copy)
 var WorkerService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "secflow.v1.WorkerService",
 	HandlerType: (*WorkerServiceServer)(nil),
@@ -133,23 +94,46 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	PluginRegistryService_ListPlugins_FullMethodName  = "/secflow.v1.PluginRegistryService/ListPlugins"
-	PluginRegistryService_GetPlugin_FullMethodName    = "/secflow.v1.PluginRegistryService/GetPlugin"
-	PluginRegistryService_WatchPlugins_FullMethodName = "/secflow.v1.PluginRegistryService/WatchPlugins"
+	PluginRegistryService_ListPlugins_FullMethodName                  = "/secflow.v1.PluginRegistryService/ListPlugins"
+	PluginRegistryService_GetPlugin_FullMethodName                    = "/secflow.v1.PluginRegistryService/GetPlugin"
+	PluginRegistryService_WatchPlugins_FullMethodName                 = "/secflow.v1.PluginRegistryService/WatchPlugins"
+	PluginRegistryService_ListPluginInstallations_FullMethodName      = "/secflow.v1.PluginRegistryService/ListPluginInstallations"
+	PluginRegistryService_GetPluginInstallation_FullMethodName        = "/secflow.v1.PluginRegistryService/GetPluginInstallation"
+	PluginRegistryService_ListPluginPresets_FullMethodName            = "/secflow.v1.PluginRegistryService/ListPluginPresets"
+	PluginRegistryService_InstallPlugin_FullMethodName                = "/secflow.v1.PluginRegistryService/InstallPlugin"
+	PluginRegistryService_ApprovePluginInstallation_FullMethodName    = "/secflow.v1.PluginRegistryService/ApprovePluginInstallation"
+	PluginRegistryService_UpdatePluginInstallation_FullMethodName     = "/secflow.v1.PluginRegistryService/UpdatePluginInstallation"
+	PluginRegistryService_SetPluginInstallationEnabled_FullMethodName = "/secflow.v1.PluginRegistryService/SetPluginInstallationEnabled"
+	PluginRegistryService_DeletePluginInstallation_FullMethodName     = "/secflow.v1.PluginRegistryService/DeletePluginInstallation"
+	PluginRegistryService_WatchPluginInstallations_FullMethodName     = "/secflow.v1.PluginRegistryService/WatchPluginInstallations"
+	PluginRegistryService_TestDeclarativePlugin_FullMethodName        = "/secflow.v1.PluginRegistryService/TestDeclarativePlugin"
+	PluginRegistryService_ListDeclarativeSpecs_FullMethodName         = "/secflow.v1.PluginRegistryService/ListDeclarativeSpecs"
+	PluginRegistryService_ListSavedNodes_FullMethodName               = "/secflow.v1.PluginRegistryService/ListSavedNodes"
+	PluginRegistryService_SaveNode_FullMethodName                     = "/secflow.v1.PluginRegistryService/SaveNode"
+	PluginRegistryService_UpdateSavedNode_FullMethodName              = "/secflow.v1.PluginRegistryService/UpdateSavedNode"
+	PluginRegistryService_DeleteSavedNode_FullMethodName              = "/secflow.v1.PluginRegistryService/DeleteSavedNode"
 )
 
 // PluginRegistryServiceClient is the client API for PluginRegistryService service.
-//
-// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-//
-// PluginRegistryService serves registered built-in + live connected plugins
-// (including hot-plugged external sandbox plugins) to edge-gateway / UI / AI.
 type PluginRegistryServiceClient interface {
 	ListPlugins(ctx context.Context, in *ListPluginsRequest, opts ...grpc.CallOption) (*ListPluginsResponse, error)
 	GetPlugin(ctx context.Context, in *GetPluginRequest, opts ...grpc.CallOption) (*GetPluginResponse, error)
-	// Server-stream emitting REGISTERED / UPDATED / OFFLINE events so UI palette
-	// updates in real time without restarting edge-gateway, orchestrator, or web.
 	WatchPlugins(ctx context.Context, in *WatchPluginsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchPluginsResponse], error)
+	ListPluginInstallations(ctx context.Context, in *ListPluginInstallationsRequest, opts ...grpc.CallOption) (*ListPluginInstallationsResponse, error)
+	GetPluginInstallation(ctx context.Context, in *GetPluginInstallationRequest, opts ...grpc.CallOption) (*GetPluginInstallationResponse, error)
+	ListPluginPresets(ctx context.Context, in *ListPluginPresetsRequest, opts ...grpc.CallOption) (*ListPluginPresetsResponse, error)
+	InstallPlugin(ctx context.Context, in *InstallPluginRequest, opts ...grpc.CallOption) (*InstallPluginResponse, error)
+	ApprovePluginInstallation(ctx context.Context, in *ApprovePluginInstallationRequest, opts ...grpc.CallOption) (*ApprovePluginInstallationResponse, error)
+	UpdatePluginInstallation(ctx context.Context, in *UpdatePluginInstallationRequest, opts ...grpc.CallOption) (*UpdatePluginInstallationResponse, error)
+	SetPluginInstallationEnabled(ctx context.Context, in *SetPluginInstallationEnabledRequest, opts ...grpc.CallOption) (*SetPluginInstallationEnabledResponse, error)
+	DeletePluginInstallation(ctx context.Context, in *DeletePluginInstallationRequest, opts ...grpc.CallOption) (*DeletePluginInstallationResponse, error)
+	WatchPluginInstallations(ctx context.Context, in *WatchPluginInstallationsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchPluginInstallationsResponse], error)
+	TestDeclarativePlugin(ctx context.Context, in *TestDeclarativePluginRequest, opts ...grpc.CallOption) (*TestDeclarativePluginResponse, error)
+	ListDeclarativeSpecs(ctx context.Context, in *ListDeclarativeSpecsRequest, opts ...grpc.CallOption) (*ListDeclarativeSpecsResponse, error)
+	ListSavedNodes(ctx context.Context, in *ListSavedNodesRequest, opts ...grpc.CallOption) (*ListSavedNodesResponse, error)
+	SaveNode(ctx context.Context, in *SaveNodeRequest, opts ...grpc.CallOption) (*SaveNodeResponse, error)
+	UpdateSavedNode(ctx context.Context, in *UpdateSavedNodeRequest, opts ...grpc.CallOption) (*UpdateSavedNodeResponse, error)
+	DeleteSavedNode(ctx context.Context, in *DeleteSavedNodeRequest, opts ...grpc.CallOption) (*DeleteSavedNodeResponse, error)
 }
 
 type pluginRegistryServiceClient struct {
@@ -196,29 +180,189 @@ func (c *pluginRegistryServiceClient) WatchPlugins(ctx context.Context, in *Watc
 	return x, nil
 }
 
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type PluginRegistryService_WatchPluginsClient = grpc.ServerStreamingClient[WatchPluginsResponse]
 
+func (c *pluginRegistryServiceClient) ListPluginInstallations(ctx context.Context, in *ListPluginInstallationsRequest, opts ...grpc.CallOption) (*ListPluginInstallationsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPluginInstallationsResponse)
+	err := c.cc.Invoke(ctx, PluginRegistryService_ListPluginInstallations_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginRegistryServiceClient) GetPluginInstallation(ctx context.Context, in *GetPluginInstallationRequest, opts ...grpc.CallOption) (*GetPluginInstallationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPluginInstallationResponse)
+	err := c.cc.Invoke(ctx, PluginRegistryService_GetPluginInstallation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginRegistryServiceClient) ListPluginPresets(ctx context.Context, in *ListPluginPresetsRequest, opts ...grpc.CallOption) (*ListPluginPresetsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPluginPresetsResponse)
+	err := c.cc.Invoke(ctx, PluginRegistryService_ListPluginPresets_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginRegistryServiceClient) InstallPlugin(ctx context.Context, in *InstallPluginRequest, opts ...grpc.CallOption) (*InstallPluginResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InstallPluginResponse)
+	err := c.cc.Invoke(ctx, PluginRegistryService_InstallPlugin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginRegistryServiceClient) ApprovePluginInstallation(ctx context.Context, in *ApprovePluginInstallationRequest, opts ...grpc.CallOption) (*ApprovePluginInstallationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApprovePluginInstallationResponse)
+	err := c.cc.Invoke(ctx, PluginRegistryService_ApprovePluginInstallation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginRegistryServiceClient) UpdatePluginInstallation(ctx context.Context, in *UpdatePluginInstallationRequest, opts ...grpc.CallOption) (*UpdatePluginInstallationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdatePluginInstallationResponse)
+	err := c.cc.Invoke(ctx, PluginRegistryService_UpdatePluginInstallation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginRegistryServiceClient) SetPluginInstallationEnabled(ctx context.Context, in *SetPluginInstallationEnabledRequest, opts ...grpc.CallOption) (*SetPluginInstallationEnabledResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetPluginInstallationEnabledResponse)
+	err := c.cc.Invoke(ctx, PluginRegistryService_SetPluginInstallationEnabled_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginRegistryServiceClient) DeletePluginInstallation(ctx context.Context, in *DeletePluginInstallationRequest, opts ...grpc.CallOption) (*DeletePluginInstallationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeletePluginInstallationResponse)
+	err := c.cc.Invoke(ctx, PluginRegistryService_DeletePluginInstallation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginRegistryServiceClient) WatchPluginInstallations(ctx context.Context, in *WatchPluginInstallationsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchPluginInstallationsResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &PluginRegistryService_ServiceDesc.Streams[1], PluginRegistryService_WatchPluginInstallations_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[WatchPluginInstallationsRequest, WatchPluginInstallationsResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+type PluginRegistryService_WatchPluginInstallationsClient = grpc.ServerStreamingClient[WatchPluginInstallationsResponse]
+
+func (c *pluginRegistryServiceClient) TestDeclarativePlugin(ctx context.Context, in *TestDeclarativePluginRequest, opts ...grpc.CallOption) (*TestDeclarativePluginResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TestDeclarativePluginResponse)
+	err := c.cc.Invoke(ctx, PluginRegistryService_TestDeclarativePlugin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginRegistryServiceClient) ListDeclarativeSpecs(ctx context.Context, in *ListDeclarativeSpecsRequest, opts ...grpc.CallOption) (*ListDeclarativeSpecsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListDeclarativeSpecsResponse)
+	err := c.cc.Invoke(ctx, PluginRegistryService_ListDeclarativeSpecs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginRegistryServiceClient) ListSavedNodes(ctx context.Context, in *ListSavedNodesRequest, opts ...grpc.CallOption) (*ListSavedNodesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSavedNodesResponse)
+	err := c.cc.Invoke(ctx, PluginRegistryService_ListSavedNodes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginRegistryServiceClient) SaveNode(ctx context.Context, in *SaveNodeRequest, opts ...grpc.CallOption) (*SaveNodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SaveNodeResponse)
+	err := c.cc.Invoke(ctx, PluginRegistryService_SaveNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginRegistryServiceClient) UpdateSavedNode(ctx context.Context, in *UpdateSavedNodeRequest, opts ...grpc.CallOption) (*UpdateSavedNodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateSavedNodeResponse)
+	err := c.cc.Invoke(ctx, PluginRegistryService_UpdateSavedNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginRegistryServiceClient) DeleteSavedNode(ctx context.Context, in *DeleteSavedNodeRequest, opts ...grpc.CallOption) (*DeleteSavedNodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteSavedNodeResponse)
+	err := c.cc.Invoke(ctx, PluginRegistryService_DeleteSavedNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PluginRegistryServiceServer is the server API for PluginRegistryService service.
-// All implementations must embed UnimplementedPluginRegistryServiceServer
-// for forward compatibility.
-//
-// PluginRegistryService serves registered built-in + live connected plugins
-// (including hot-plugged external sandbox plugins) to edge-gateway / UI / AI.
 type PluginRegistryServiceServer interface {
 	ListPlugins(context.Context, *ListPluginsRequest) (*ListPluginsResponse, error)
 	GetPlugin(context.Context, *GetPluginRequest) (*GetPluginResponse, error)
-	// Server-stream emitting REGISTERED / UPDATED / OFFLINE events so UI palette
-	// updates in real time without restarting edge-gateway, orchestrator, or web.
 	WatchPlugins(*WatchPluginsRequest, grpc.ServerStreamingServer[WatchPluginsResponse]) error
+	ListPluginInstallations(context.Context, *ListPluginInstallationsRequest) (*ListPluginInstallationsResponse, error)
+	GetPluginInstallation(context.Context, *GetPluginInstallationRequest) (*GetPluginInstallationResponse, error)
+	ListPluginPresets(context.Context, *ListPluginPresetsRequest) (*ListPluginPresetsResponse, error)
+	InstallPlugin(context.Context, *InstallPluginRequest) (*InstallPluginResponse, error)
+	ApprovePluginInstallation(context.Context, *ApprovePluginInstallationRequest) (*ApprovePluginInstallationResponse, error)
+	UpdatePluginInstallation(context.Context, *UpdatePluginInstallationRequest) (*UpdatePluginInstallationResponse, error)
+	SetPluginInstallationEnabled(context.Context, *SetPluginInstallationEnabledRequest) (*SetPluginInstallationEnabledResponse, error)
+	DeletePluginInstallation(context.Context, *DeletePluginInstallationRequest) (*DeletePluginInstallationResponse, error)
+	WatchPluginInstallations(*WatchPluginInstallationsRequest, grpc.ServerStreamingServer[WatchPluginInstallationsResponse]) error
+	TestDeclarativePlugin(context.Context, *TestDeclarativePluginRequest) (*TestDeclarativePluginResponse, error)
+	ListDeclarativeSpecs(context.Context, *ListDeclarativeSpecsRequest) (*ListDeclarativeSpecsResponse, error)
+	ListSavedNodes(context.Context, *ListSavedNodesRequest) (*ListSavedNodesResponse, error)
+	SaveNode(context.Context, *SaveNodeRequest) (*SaveNodeResponse, error)
+	UpdateSavedNode(context.Context, *UpdateSavedNodeRequest) (*UpdateSavedNodeResponse, error)
+	DeleteSavedNode(context.Context, *DeleteSavedNodeRequest) (*DeleteSavedNodeResponse, error)
 	mustEmbedUnimplementedPluginRegistryServiceServer()
 }
 
-// UnimplementedPluginRegistryServiceServer must be embedded to have
-// forward compatible implementations.
-//
-// NOTE: this should be embedded by value instead of pointer to avoid a nil
-// pointer dereference when methods are called.
 type UnimplementedPluginRegistryServiceServer struct{}
 
 func (UnimplementedPluginRegistryServiceServer) ListPlugins(context.Context, *ListPluginsRequest) (*ListPluginsResponse, error) {
@@ -230,21 +374,59 @@ func (UnimplementedPluginRegistryServiceServer) GetPlugin(context.Context, *GetP
 func (UnimplementedPluginRegistryServiceServer) WatchPlugins(*WatchPluginsRequest, grpc.ServerStreamingServer[WatchPluginsResponse]) error {
 	return status.Errorf(codes.Unimplemented, "method WatchPlugins not implemented")
 }
+func (UnimplementedPluginRegistryServiceServer) ListPluginInstallations(context.Context, *ListPluginInstallationsRequest) (*ListPluginInstallationsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListPluginInstallations not implemented")
+}
+func (UnimplementedPluginRegistryServiceServer) GetPluginInstallation(context.Context, *GetPluginInstallationRequest) (*GetPluginInstallationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetPluginInstallation not implemented")
+}
+func (UnimplementedPluginRegistryServiceServer) ListPluginPresets(context.Context, *ListPluginPresetsRequest) (*ListPluginPresetsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListPluginPresets not implemented")
+}
+func (UnimplementedPluginRegistryServiceServer) InstallPlugin(context.Context, *InstallPluginRequest) (*InstallPluginResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method InstallPlugin not implemented")
+}
+func (UnimplementedPluginRegistryServiceServer) ApprovePluginInstallation(context.Context, *ApprovePluginInstallationRequest) (*ApprovePluginInstallationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ApprovePluginInstallation not implemented")
+}
+func (UnimplementedPluginRegistryServiceServer) UpdatePluginInstallation(context.Context, *UpdatePluginInstallationRequest) (*UpdatePluginInstallationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdatePluginInstallation not implemented")
+}
+func (UnimplementedPluginRegistryServiceServer) SetPluginInstallationEnabled(context.Context, *SetPluginInstallationEnabledRequest) (*SetPluginInstallationEnabledResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetPluginInstallationEnabled not implemented")
+}
+func (UnimplementedPluginRegistryServiceServer) DeletePluginInstallation(context.Context, *DeletePluginInstallationRequest) (*DeletePluginInstallationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeletePluginInstallation not implemented")
+}
+func (UnimplementedPluginRegistryServiceServer) WatchPluginInstallations(*WatchPluginInstallationsRequest, grpc.ServerStreamingServer[WatchPluginInstallationsResponse]) error {
+	return status.Errorf(codes.Unimplemented, "method WatchPluginInstallations not implemented")
+}
+func (UnimplementedPluginRegistryServiceServer) TestDeclarativePlugin(context.Context, *TestDeclarativePluginRequest) (*TestDeclarativePluginResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method TestDeclarativePlugin not implemented")
+}
+func (UnimplementedPluginRegistryServiceServer) ListDeclarativeSpecs(context.Context, *ListDeclarativeSpecsRequest) (*ListDeclarativeSpecsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListDeclarativeSpecs not implemented")
+}
+func (UnimplementedPluginRegistryServiceServer) ListSavedNodes(context.Context, *ListSavedNodesRequest) (*ListSavedNodesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListSavedNodes not implemented")
+}
+func (UnimplementedPluginRegistryServiceServer) SaveNode(context.Context, *SaveNodeRequest) (*SaveNodeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SaveNode not implemented")
+}
+func (UnimplementedPluginRegistryServiceServer) UpdateSavedNode(context.Context, *UpdateSavedNodeRequest) (*UpdateSavedNodeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateSavedNode not implemented")
+}
+func (UnimplementedPluginRegistryServiceServer) DeleteSavedNode(context.Context, *DeleteSavedNodeRequest) (*DeleteSavedNodeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeleteSavedNode not implemented")
+}
 func (UnimplementedPluginRegistryServiceServer) mustEmbedUnimplementedPluginRegistryServiceServer() {}
 func (UnimplementedPluginRegistryServiceServer) testEmbeddedByValue()                               {}
 
-// UnsafePluginRegistryServiceServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to PluginRegistryServiceServer will
-// result in compilation errors.
 type UnsafePluginRegistryServiceServer interface {
 	mustEmbedUnimplementedPluginRegistryServiceServer()
 }
 
 func RegisterPluginRegistryServiceServer(s grpc.ServiceRegistrar, srv PluginRegistryServiceServer) {
-	// If the following call pancis, it indicates UnimplementedPluginRegistryServiceServer was
-	// embedded by pointer and is nil.  This will cause panics if an
-	// unimplemented method is ever invoked, so we test this at initialization
-	// time to prevent it from happening at runtime later due to I/O.
 	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
 		t.testEmbeddedByValue()
 	}
@@ -295,12 +477,270 @@ func _PluginRegistryService_WatchPlugins_Handler(srv interface{}, stream grpc.Se
 	return srv.(PluginRegistryServiceServer).WatchPlugins(m, &grpc.GenericServerStream[WatchPluginsRequest, WatchPluginsResponse]{ServerStream: stream})
 }
 
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type PluginRegistryService_WatchPluginsServer = grpc.ServerStreamingServer[WatchPluginsResponse]
 
-// PluginRegistryService_ServiceDesc is the grpc.ServiceDesc for PluginRegistryService service.
-// It's only intended for direct use with grpc.RegisterService,
-// and not to be introspected or modified (even as a copy)
+func _PluginRegistryService_ListPluginInstallations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPluginInstallationsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginRegistryServiceServer).ListPluginInstallations(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PluginRegistryService_ListPluginInstallations_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginRegistryServiceServer).ListPluginInstallations(ctx, req.(*ListPluginInstallationsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PluginRegistryService_GetPluginInstallation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPluginInstallationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginRegistryServiceServer).GetPluginInstallation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PluginRegistryService_GetPluginInstallation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginRegistryServiceServer).GetPluginInstallation(ctx, req.(*GetPluginInstallationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PluginRegistryService_ListPluginPresets_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPluginPresetsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginRegistryServiceServer).ListPluginPresets(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PluginRegistryService_ListPluginPresets_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginRegistryServiceServer).ListPluginPresets(ctx, req.(*ListPluginPresetsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PluginRegistryService_InstallPlugin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InstallPluginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginRegistryServiceServer).InstallPlugin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PluginRegistryService_InstallPlugin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginRegistryServiceServer).InstallPlugin(ctx, req.(*InstallPluginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PluginRegistryService_ApprovePluginInstallation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApprovePluginInstallationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginRegistryServiceServer).ApprovePluginInstallation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PluginRegistryService_ApprovePluginInstallation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginRegistryServiceServer).ApprovePluginInstallation(ctx, req.(*ApprovePluginInstallationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PluginRegistryService_UpdatePluginInstallation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdatePluginInstallationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginRegistryServiceServer).UpdatePluginInstallation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PluginRegistryService_UpdatePluginInstallation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginRegistryServiceServer).UpdatePluginInstallation(ctx, req.(*UpdatePluginInstallationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PluginRegistryService_SetPluginInstallationEnabled_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetPluginInstallationEnabledRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginRegistryServiceServer).SetPluginInstallationEnabled(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PluginRegistryService_SetPluginInstallationEnabled_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginRegistryServiceServer).SetPluginInstallationEnabled(ctx, req.(*SetPluginInstallationEnabledRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PluginRegistryService_DeletePluginInstallation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeletePluginInstallationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginRegistryServiceServer).DeletePluginInstallation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PluginRegistryService_DeletePluginInstallation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginRegistryServiceServer).DeletePluginInstallation(ctx, req.(*DeletePluginInstallationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PluginRegistryService_WatchPluginInstallations_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(WatchPluginInstallationsRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(PluginRegistryServiceServer).WatchPluginInstallations(m, &grpc.GenericServerStream[WatchPluginInstallationsRequest, WatchPluginInstallationsResponse]{ServerStream: stream})
+}
+
+type PluginRegistryService_WatchPluginInstallationsServer = grpc.ServerStreamingServer[WatchPluginInstallationsResponse]
+
+func _PluginRegistryService_TestDeclarativePlugin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TestDeclarativePluginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginRegistryServiceServer).TestDeclarativePlugin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PluginRegistryService_TestDeclarativePlugin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginRegistryServiceServer).TestDeclarativePlugin(ctx, req.(*TestDeclarativePluginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PluginRegistryService_ListDeclarativeSpecs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListDeclarativeSpecsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginRegistryServiceServer).ListDeclarativeSpecs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PluginRegistryService_ListDeclarativeSpecs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginRegistryServiceServer).ListDeclarativeSpecs(ctx, req.(*ListDeclarativeSpecsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PluginRegistryService_ListSavedNodes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSavedNodesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginRegistryServiceServer).ListSavedNodes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PluginRegistryService_ListSavedNodes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginRegistryServiceServer).ListSavedNodes(ctx, req.(*ListSavedNodesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PluginRegistryService_SaveNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SaveNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginRegistryServiceServer).SaveNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PluginRegistryService_SaveNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginRegistryServiceServer).SaveNode(ctx, req.(*SaveNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PluginRegistryService_UpdateSavedNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateSavedNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginRegistryServiceServer).UpdateSavedNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PluginRegistryService_UpdateSavedNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginRegistryServiceServer).UpdateSavedNode(ctx, req.(*UpdateSavedNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PluginRegistryService_DeleteSavedNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteSavedNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginRegistryServiceServer).DeleteSavedNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PluginRegistryService_DeleteSavedNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginRegistryServiceServer).DeleteSavedNode(ctx, req.(*DeleteSavedNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 var PluginRegistryService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "secflow.v1.PluginRegistryService",
 	HandlerType: (*PluginRegistryServiceServer)(nil),
@@ -313,11 +753,72 @@ var PluginRegistryService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "GetPlugin",
 			Handler:    _PluginRegistryService_GetPlugin_Handler,
 		},
+		{
+			MethodName: "ListPluginInstallations",
+			Handler:    _PluginRegistryService_ListPluginInstallations_Handler,
+		},
+		{
+			MethodName: "GetPluginInstallation",
+			Handler:    _PluginRegistryService_GetPluginInstallation_Handler,
+		},
+		{
+			MethodName: "ListPluginPresets",
+			Handler:    _PluginRegistryService_ListPluginPresets_Handler,
+		},
+		{
+			MethodName: "InstallPlugin",
+			Handler:    _PluginRegistryService_InstallPlugin_Handler,
+		},
+		{
+			MethodName: "ApprovePluginInstallation",
+			Handler:    _PluginRegistryService_ApprovePluginInstallation_Handler,
+		},
+		{
+			MethodName: "UpdatePluginInstallation",
+			Handler:    _PluginRegistryService_UpdatePluginInstallation_Handler,
+		},
+		{
+			MethodName: "SetPluginInstallationEnabled",
+			Handler:    _PluginRegistryService_SetPluginInstallationEnabled_Handler,
+		},
+		{
+			MethodName: "DeletePluginInstallation",
+			Handler:    _PluginRegistryService_DeletePluginInstallation_Handler,
+		},
+		{
+			MethodName: "TestDeclarativePlugin",
+			Handler:    _PluginRegistryService_TestDeclarativePlugin_Handler,
+		},
+		{
+			MethodName: "ListDeclarativeSpecs",
+			Handler:    _PluginRegistryService_ListDeclarativeSpecs_Handler,
+		},
+		{
+			MethodName: "ListSavedNodes",
+			Handler:    _PluginRegistryService_ListSavedNodes_Handler,
+		},
+		{
+			MethodName: "SaveNode",
+			Handler:    _PluginRegistryService_SaveNode_Handler,
+		},
+		{
+			MethodName: "UpdateSavedNode",
+			Handler:    _PluginRegistryService_UpdateSavedNode_Handler,
+		},
+		{
+			MethodName: "DeleteSavedNode",
+			Handler:    _PluginRegistryService_DeleteSavedNode_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "WatchPlugins",
 			Handler:       _PluginRegistryService_WatchPlugins_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "WatchPluginInstallations",
+			Handler:       _PluginRegistryService_WatchPluginInstallations_Handler,
 			ServerStreams: true,
 		},
 	},

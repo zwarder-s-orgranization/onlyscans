@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { InkThemeToggle } from "@/components/theme/InkThemeToggle";
 import { useWorkspacePreview } from "@/components/workspace/WorkspacePreviewContext";
 import { ApiError, gql, QUERIES } from "@/lib/api";
 import { clearSession, readSession, writeSession, type Session } from "@/lib/session";
@@ -174,8 +175,17 @@ function LoginScreen({ onSuccess }: { onSuccess: (session: Session) => void }) {
         onSubmit={submit}
         className="w-full max-w-[420px] rounded-[24px] border border-[#8c9baa]/60 p-6"
       >
-        <p className="text-[13px] font-semibold tracking-[-0.02em] text-[#636f7b]">SecFlow</p>
-        <h1 className="mt-1 text-[24px] font-semibold tracking-[-0.04em]">Вход</h1>
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <img
+            src="/onlyscans-logo.png"
+            alt="onlyscans"
+            width={151}
+            height={26}
+            className="fm-brand-logo h-[26px] w-auto select-none"
+          />
+          <InkThemeToggle />
+        </div>
+        <h1 className="text-[24px] font-semibold tracking-[-0.04em]">Вход</h1>
         <p className="mt-2 text-[14px] text-[#636f7b]">
           Локальный аккаунт стенда. После входа сценарии читаются с сервера.
         </p>

@@ -49,6 +49,8 @@ func (s *Server) injectedNotifyClient() secflowv1.NotifyServiceClient {
 }
 
 func (s *Server) startPump(ctx context.Context) {
+	maxConcurrent := envPositiveInt("ORCHESTRATOR_MAX_CONCURRENT_TASKS", 32)
+	sem := make(chan struct{}, maxConcurrent)
 	go func() {
 		tick := time.NewTicker(200 * time.Millisecond)
 		defer tick.Stop()
@@ -57,9 +59,9 @@ func (s *Server) startPump(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-s.wake:
-				s.drain(ctx)
+				s.drainConcurrent(ctx, sem)
 			case <-tick.C:
-				s.drain(ctx)
+				s.drainConcurrent(ctx, sem)
 			}
 		}
 	}()
@@ -82,6 +84,33 @@ func (s *Server) drain(ctx context.Context) {
 			return
 		}
 		s.runNode(ctx, runID, nodeID)
+	}
+}
+
+func (s *Server) drainConcurrent(ctx context.Context, sem chan struct{}) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		select {
+		case sem <- struct{}{}:
+		default:
+			return
+		}
+		runID, nodeID, _, ok := s.claim(ctx)
+		if !ok {
+			<-sem
+			return
+		}
+		s.taskWG.Add(1)
+		go func(rID, nID string) {
+			defer s.taskWG.Done()
+			defer func() {
+				<-sem
+				s.kick()
+			}()
+			s.runNode(ctx, rID, nID)
+		}(runID, nodeID)
 	}
 }
 
@@ -186,7 +215,7 @@ func (s *Server) runNode(ctx context.Context, runID, nodeID string) {
 		nil,
 	)
 
-	execNode := resolveNodeParams(node, in)
+	execNode := resolveNodeParamsWithSecretKeys(node, in, s.pluginRequiredSecretKeys(node.PluginID))
 	handlers := s.handlersCtx(nodeCtx, sourceID, repoURL)
 	result := engine.Step(execNode, in, handlers)
 	finishedAt := time.Now()
@@ -198,6 +227,8 @@ func (s *Server) runNode(ctx context.Context, runID, nodeID string) {
 		Output:          result.Envelope,
 		Ports:           slices.Clone(result.ActivePorts),
 		PortOutputs:     result.PortEnvelopes,
+		ArtifactKey:     result.ArtifactKey,
+		ArtifactContent: result.ArtifactContent,
 		RedactedPreview: slices.Clone(result.RedactedPreview),
 	}
 	if result.Status == "FAILED" {
@@ -244,7 +275,7 @@ func (s *Server) runNode(ctx context.Context, runID, nodeID string) {
 	}
 	st.done[nodeID] = tr
 	findingsEmitted := 0
-	if engine.IsAnalyzer(node.PluginID) {
+	if s.isAnalyzerPlugin(node.PluginID) {
 		baselineSet := baselineSetFromPayloads(st.payloads)
 		reported := toReport(result.Findings)
 		st.findings = append(st.findings, reported...)
@@ -299,7 +330,7 @@ func (s *Server) runNode(ctx context.Context, runID, nodeID string) {
 		st.run.SourceRef = sourceRefProtoFromInfo(result.Envelope.SourceRef)
 	}
 	var gateRes *secflowv1.GateResult
-	if node.PluginID == "gate.policy" {
+	if node.PluginID == "gate.policy" || (result.Envelope.Gate != nil && result.Envelope.Gate.NodeID == nodeID && s.pluginCategory(node.PluginID) == secflowv1.PluginCategory_PLUGIN_CATEGORY_LOGIC) {
 		fallbackPort := ""
 		if len(tr.Ports) > 0 {
 			fallbackPort = tr.Ports[0]
@@ -956,6 +987,14 @@ func (s *Server) storeTraceLocked(st *runState, nodeID string, tr engine.NodeTra
 		st.payloads["ai_report"] = rawAI
 		if st.run != nil {
 			st.run.AiReport = aiReportFromPayload(st.findings, rawAI)
+		}
+	}
+	if tr.ArtifactKey != "" {
+		if metaRaw, err := json.Marshal(map[string]string{
+			"bucket": "secflow-artifacts",
+			"key":    tr.ArtifactKey,
+		}); err == nil {
+			st.payloads["artifact:"+nodeID] = metaRaw
 		}
 	}
 }

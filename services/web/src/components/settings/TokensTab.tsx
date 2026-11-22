@@ -370,7 +370,7 @@ export function TokensTab({
           <div className="px-6 py-10 text-center">
             <p className="text-[14px] font-semibold text-[#000000]">Токенов пока нет</p>
             <p className="mt-1 text-[13px] text-[#636f7b]">
-              Выпустите Scoped Token для запуска SecFlow из GitLab CI, GitHub Actions или IDE.
+              Выпустите Scoped Token для запуска onlyscans из GitLab CI, GitHub Actions или IDE.
             </p>
           </div>
         ) : (

@@ -1,0 +1,92 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+images:
+  - name: ghcr.io/secflow/orchestrator
+    newName: onlyscans/orchestrator
+    newTag: local
+  - name: ghcr.io/secflow/source-ingester
+    newName: onlyscans/source-ingester
+    newTag: local
+  - name: ghcr.io/secflow/edge-gateway
+    newName: onlyscans/edge-gateway
+    newTag: local
+  - name: ghcr.io/secflow/web
+    newName: onlyscans/web
+    newTag: local
+  - name: ghcr.io/secflow/plugin-provisioner
+    newName: onlyscans/plugin-provisioner
+    newTag: local
+  - name: ghcr.io/secflow/plugin-runtime-internal
+    newName: onlyscans/plugin-runtime-internal
+    newTag: local
+  - name: ghcr.io/secflow/plugin-runtime-action
+    newName: onlyscans/plugin-runtime-action
+    newTag: local
+  - name: ghcr.io/secflow/garage-init
+    newName: onlyscans/garage-init
+    newTag: local
+  - name: ghcr.io/secflow/ai-service
+    newName: onlyscans/ai-service
+    newTag: local
+  - name: ghcr.io/secflow/notify-service
+    newName: onlyscans/notify-service
+    newTag: local
+  - name: ghcr.io/secflow/mcp-bridge
+    newName: onlyscans/mcp-bridge
+    newTag: local
+
+patches:
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: Ingress
+      name: secflow
+      namespace: secflow-app
+    patch: |-
+      - op: replace
+        path: /spec/ingressClassName
+        value: traefik
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: orchestrator
+        namespace: secflow-app
+      spec:
+        template:
+          spec:
+            containers:
+              - name: orchestrator
+                env:
+                  - name: WORKER_IMAGE_REGISTRY
+                    value: onlyscans
+                  - name: WORKER_IMAGE_TAG
+                    value: local
+                  - name: WORKER_IDLE_TTL_SECONDS
+                    value: "90"
+                  - name: WORKER_MAX_REPLICAS
+                    value: "4"
+  - target:
+      group: apps
+      version: v1
+      kind: StatefulSet
+      name: postgres
+      namespace: secflow-system
+    patch: |-
+      - op: add
+        path: /spec/volumeClaimTemplates/0/spec/storageClassName
+        value: local-path
+  - target:
+      group: apps
+      version: v1
+      kind: StatefulSet
+      name: garage
+      namespace: secflow-system
+    patch: |-
+      - op: add
+        path: /spec/volumeClaimTemplates/0/spec/storageClassName
+        value: local-path

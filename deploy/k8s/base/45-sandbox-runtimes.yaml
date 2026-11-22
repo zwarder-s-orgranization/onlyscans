@@ -1,0 +1,181 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plugin-runtime-internal
+  namespace: secflow-sandbox
+  labels:
+    app: plugin-runtime-internal
+    secflow.io/declarative-runtime: internal
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: plugin-runtime-internal
+  template:
+    metadata:
+      labels:
+        app: plugin-runtime-internal
+        secflow.io/declarative-runtime: internal
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: plugin-runtime-internal
+          image: ghcr.io/secflow/plugin-runtime-internal:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8090
+          env:
+            - name: HTTP_ADDR
+              value: ":8090"
+            - name: WORKER_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              value: secflow-sandbox
+            - name: ORCHESTRATOR_ADDR
+              value: orchestrator.secflow-app.svc.cluster.local:50051
+            - name: GARAGE_ENDPOINT
+              value: http://garage.secflow-system.svc.cluster.local:3900
+            - name: SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-sandbox-runtime-auth
+                  key: SERVICE_TOKEN
+            - name: GARAGE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-garage-creds
+                  key: GARAGE_ACCESS_KEY
+                  optional: true
+            - name: GARAGE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-garage-creds
+                  key: GARAGE_SECRET_KEY
+                  optional: true
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plugin-runtime-action
+  namespace: secflow-sandbox
+  labels:
+    app: plugin-runtime-action
+    secflow.io/declarative-runtime: action
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: plugin-runtime-action
+  template:
+    metadata:
+      labels:
+        app: plugin-runtime-action
+        secflow.io/declarative-runtime: action
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: plugin-runtime-action
+          image: ghcr.io/secflow/plugin-runtime-action:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8091
+          env:
+            - name: HTTP_ADDR
+              value: ":8091"
+            - name: WORKER_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              value: secflow-sandbox
+            - name: SECFLOW_ENV
+              value: production
+            - name: ORCHESTRATOR_ADDR
+              value: orchestrator.secflow-app.svc.cluster.local:50051
+            - name: SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-sandbox-runtime-auth
+                  key: SERVICE_TOKEN
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi

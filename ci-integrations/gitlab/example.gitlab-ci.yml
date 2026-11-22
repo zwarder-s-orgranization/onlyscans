@@ -1,0 +1,35 @@
+# Example `.gitlab-ci.yml` using the SecFlow GitLab CI/CD Component.
+# Set `SECFLOW_TOKEN` (masked) in Settings -> CI/CD -> Variables.
+
+include:
+  # Option 1: GitLab CI/CD Component (when `ci-integrations/gitlab` is published as a component repo)
+  - component: $CI_SERVER_FQDN/my-group/secflow-ci/secflow@main
+    inputs:
+      workflow_id: wf_your_workflow_id
+      # Optional: defaults to http://edge-gateway:8080 (local Docker/K8s service domain)
+      secflow_url: http://edge-gateway:8080
+
+  # Option 2: Direct include from a local GitLab repository (works without CI/CD Catalog)
+  # - project: 'my-group/secflow'
+  #   ref: main
+  #   file: '/ci-integrations/gitlab/templates/secflow.yml'
+  #   inputs:
+  #     workflow_id: wf_your_workflow_id
+  #     secflow_url: http://edge-gateway:8080
+
+stages:
+  - test
+  - report
+
+# Optional downstream job consuming outputs exported via dotenv + artifacts:
+show_secflow_result:
+  stage: report
+  needs:
+    - job: secflow_scan
+      artifacts: true
+  when: always
+  script:
+    - |
+      echo "Run ID: $SECFLOW_RUN_ID"
+      echo "Status: $SECFLOW_STATUS (gate: $SECFLOW_GATE_STATUS)"
+      test -n "$SECFLOW_REPORT_FILE" && cat "$SECFLOW_REPORT_FILE" || true

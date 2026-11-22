@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   BackgroundVariant,
-  Controls,
   Handle,
   Position,
   ReactFlow,
@@ -18,7 +17,6 @@ import {
   AlertTriangle,
   ArrowUpRight,
   Check,
-  Clock,
   Copy,
   Download,
   FileJson,
@@ -60,7 +58,6 @@ import {
   FlowmappPastelTriggerIcon,
   FlowmappPolicyPill,
   FlowmappRunStatusText,
-  FlowmappSeverityPills,
 } from "./FlowmappChrome";
 
 export interface PreviewNodeData extends CanvasBoardNodeData {
@@ -285,7 +282,7 @@ function HistoryPreviewNode({ data, selected }: NodeProps<PreviewFlowNode>) {
       )}
 
       <div
-        className={`relative z-10 w-full rounded-[16px] bg-[#ffffff] text-[#000000] transition-[border-color,box-shadow] duration-200 ${statusBorderClass} ${
+        className={`relative z-10 flex w-full flex-col rounded-[16px] bg-[#ffffff] text-[#000000] transition-[border-color,box-shadow] duration-200 ${statusBorderClass} ${
           selected && hasFinalStatus ? "ring-2 ring-[#0080ff]/65 ring-offset-2" : ""
         }`}
       >
@@ -347,7 +344,7 @@ function HistoryPreviewNode({ data, selected }: NodeProps<PreviewFlowNode>) {
         </div>
 
         <div
-          className={`px-3 py-2.5 ${
+          className={`flex flex-1 flex-col justify-between px-3 py-2.5 ${
             outputs.length >= 4
               ? "min-h-[126px] pr-[96px]"
               : outputs.length === 3
@@ -393,10 +390,11 @@ function HistoryPreviewNode({ data, selected }: NodeProps<PreviewFlowNode>) {
 
         {isMultiOutput ? (
           outputs.map((port, idx) => {
-            const topPercent =
-              outputs.length === 1
-                ? 56
-                : Math.round(26 + (idx * 54) / (outputs.length - 1));
+            const startPercent = outputs.length >= 4 ? 37 : outputs.length === 2 ? 44 : 41;
+            const endPercent = outputs.length >= 4 ? 88 : outputs.length === 2 ? 78 : 85;
+            const topPercent = Math.round(
+              startPercent + (idx * (endPercent - startPercent)) / Math.max(1, outputs.length - 1),
+            );
             return (
               <div key={port}>
                 <span
@@ -582,6 +580,29 @@ function RunCanvasPreviewInner({
   const [findingsLoading, setFindingsLoading] = useState(false);
   const [findingsError, setFindingsError] = useState<string | null>(null);
   const [findingCategoryFilter, setFindingCategoryFilter] = useState<string>("ALL");
+  const [findingsFiltersOpen, setFindingsFiltersOpen] = useState(false);
+  const findingsFilterRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!findingsFiltersOpen) return;
+    const onMouseDown = (event: MouseEvent) => {
+      if (
+        findingsFilterRef.current &&
+        !findingsFilterRef.current.contains(event.target as globalThis.Node)
+      ) {
+        setFindingsFiltersOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setFindingsFiltersOpen(false);
+    };
+    window.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [findingsFiltersOpen]);
 
   // Artifact download in-flight indicator
   const [downloadingKey, setDownloadingKey] = useState<string | null>(null);
@@ -773,30 +794,17 @@ function RunCanvasPreviewInner({
   return (
     <div className="relative flex min-h-0 flex-1 flex-col bg-[#ffffff]">
       {/* Compact Run Context Strip above Tabs */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#8c9baa]/40 bg-[#ffffff] px-4 py-2.5">
+      <div className="flex min-h-[61px] flex-wrap items-center justify-between gap-2.5 border-b border-[#8c9baa]/40 bg-[#ffffff] px-4 py-2.5">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <span className="fm-mono rounded-full border border-[#0080ff]/45 bg-[#c5e0fb]/35 px-2.5 py-0.5 text-[11.5px] font-semibold text-[#0050ff]">
-            {run.id}
-          </span>
           <span
             title={run.workflowName}
-            className="max-w-[240px] truncate text-[13.5px] font-semibold tracking-[-0.015em] text-[#000000] sm:max-w-[340px]"
+            className="max-w-[240px] truncate text-[15px] font-bold tracking-[-0.02em] text-[#000000] sm:max-w-[340px]"
           >
             {run.workflowName}
           </span>
-          <FlowmappRunStatusText status={run.status} />
-          <FlowmappPolicyPill verdict={run.policyGate} />
-          <div className="hidden sm:inline-flex">
-            <FlowmappSeverityPills crit={run.critCount} high={run.highCount} />
-          </div>
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-          <span className="fm-tnum hidden items-center gap-1 text-[12px] text-[#636f7b] xl:inline-flex">
-            <Clock className="h-3.5 w-3.5 stroke-[1.7]" aria-hidden="true" />
-            {run.durationLabel} · {run.startedAt}
-          </span>
-
           {canEdit && onCancelRun && isRunActive && (
             <button
               type="button"
@@ -1016,8 +1024,7 @@ function RunCanvasPreviewInner({
             fitViewOptions={{ padding: 0.22, maxZoom: 1.05 }}
             proOptions={{ hideAttribution: true }}
           >
-            <Background variant={BackgroundVariant.Cross} gap={24} size={2} color="#c5e0fb" />
-            <Controls showInteractive={false} position="bottom-left" />
+            <Background variant={BackgroundVariant.Dots} gap={32} size={1.5} color="#e3ebf3" />
           </ReactFlow>
 
           {/* Top-left floating Fit View + meta pill on canvas */}
@@ -1164,59 +1171,79 @@ function RunCanvasPreviewInner({
 
       {/* TAB 2: Real Findings Ledger */}
       {detailTab === "findings" && (
-        <div className="fm-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-5">
-          {/* Severity & Category summary bar */}
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-[16px] border border-[#8c9baa]/60 bg-[#ffffff] p-3.5">
-            <div className="fm-tnum flex flex-wrap items-center gap-2 text-[12px]">
-              <span className="rounded-full bg-[#000000] px-2.5 py-0.5 font-semibold text-[#ffffff]">
-                {run.findingsStats?.critical ?? run.critCount} CRIT
-              </span>
-              <span className="rounded-full bg-[#ffd6e0] px-2.5 py-0.5 font-semibold text-[#842029]">
-                {run.findingsStats?.high ?? run.highCount} HIGH
-              </span>
-              <span className="rounded-full bg-[#fff3c4] px-2.5 py-0.5 font-semibold text-[#664d03]">
-                {run.findingsStats?.medium ?? run.mediumCount} MED
-              </span>
-              <span className="rounded-full bg-[#c5e0fb]/70 px-2.5 py-0.5 font-semibold text-[#000000]">
-                {run.findingsStats?.low ?? run.lowCount ?? 0} LOW
-              </span>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-1.5">
-              {["ALL", "SECRET", "SAST", "SCA"].map((cat) => (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => setFindingCategoryFilter(cat)}
-                  className={`fm-focus min-h-[30px] cursor-pointer rounded-full px-3 text-[11.5px] font-semibold transition-colors ${
-                    findingCategoryFilter === cat
-                      ? "bg-[#000000] text-[#ffffff]"
-                      : "border border-[#8c9baa]/65 text-[#222222] hover:border-[#0080ff]"
-                  }`}
-                >
-                  {cat === "ALL" ? "Все" : cat}
-                </button>
+        <div className="fm-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4">
+          <div className="relative flex flex-wrap items-center justify-between gap-3 border-b border-[#8c9baa]/30 pb-3">
+            <div className="fm-tnum inline-flex min-h-[32px] flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-[#8c9baa]/40 px-3 text-[12px] text-[#636f7b]">
+              {(
+                [
+                  { label: "critical", count: run.findingsStats?.critical ?? run.critCount, dot: "#d92d20" },
+                  { label: "high", count: run.findingsStats?.high ?? run.highCount, dot: "#f97316" },
+                  { label: "medium", count: run.findingsStats?.medium ?? run.mediumCount, dot: "#facc15" },
+                  { label: "low", count: run.findingsStats?.low ?? run.lowCount ?? 0, dot: "#8c9baa" },
+                ] as const
+              ).map(({ label, count, dot }) => (
+                <span key={label} className="inline-flex items-center gap-1.5">
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-2 w-2 rounded-full"
+                    style={{ backgroundColor: dot }}
+                  />
+                  {label} <span className="font-semibold text-[#000000]">{count}</span>
+                </span>
               ))}
+            </div>
+            <div ref={findingsFilterRef} className="relative shrink-0">
+              <button
+                type="button"
+                onClick={() => setFindingsFiltersOpen((v) => !v)}
+                aria-expanded={findingsFiltersOpen}
+                className="fm-focus inline-flex min-h-[32px] cursor-pointer items-center gap-2 rounded-md border border-[#8c9baa]/40 px-3 text-[12px] text-[#000000] hover:bg-[#f1f3f5]"
+              >
+                Фильтры
+                {findingCategoryFilter !== "ALL" && (
+                  <span className="text-[#636f7b]">· {findingCategoryFilter}</span>
+                )}
+              </button>
+              {findingsFiltersOpen && (
+                <div className="absolute right-0 top-full z-20 mt-1 w-[240px] rounded-md border border-[#8c9baa]/40 bg-[#ffffff] p-3 shadow-lg">
+                  <div className="flex flex-col">
+                    {(
+                      [
+                        { cat: "ALL", label: "Все", hint: "Показать находки всех типов" },
+                        { cat: "SECRET", label: "SECRET", hint: "Утечки секретов: пароли, токены и ключи в коде" },
+                        { cat: "SAST", label: "SAST", hint: "Уязвимости в исходном коде (статический анализ)" },
+                        { cat: "SCA", label: "SCA", hint: "Уязвимости в сторонних зависимостях и пакетах" },
+                      ] as const
+                    ).map(({ cat, label, hint }) => (
+                      <button
+                        key={cat}
+                        type="button"
+                        title={hint}
+                        onClick={() => {
+                          setFindingCategoryFilter(cat);
+                          setFindingsFiltersOpen(false);
+                        }}
+                        className={`fm-focus cursor-pointer rounded px-2 py-1.5 text-left text-[12px] hover:bg-[#f1f3f5] ${
+                          findingCategoryFilter === cat ? "font-semibold text-[#000000]" : "text-[#636f7b]"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
           {findingsLoading ? (
-            <p className="py-10 text-center text-[13px] text-[#636f7b]">
-              Загружаем находки прогона…
-            </p>
+            <p className="py-10 text-center text-[13px] text-[#636f7b]">Загружаем находки прогона…</p>
           ) : findingsError ? (
-            <div className="mt-4 rounded-[16px] border border-[#dc2626]/40 bg-[#ffd6e0]/35 p-4 text-[13px] text-[#842029]">
-              {findingsError}
-            </div>
+            <p className="py-10 text-center text-[13px] text-[#842029]">{findingsError}</p>
           ) : filteredFindings.length === 0 ? (
-            <div className="mt-4 rounded-[20px] border border-[#8c9baa]/55 p-8 text-center">
-              <p className="text-[14px] font-semibold text-[#000000]">Находок не обнаружено</p>
-              <p className="mt-1 text-[12.5px] text-[#636f7b]">
-                Детерминированные анализаторы не выявили уязвимостей по выбранному фильтру.
-              </p>
-            </div>
+            <p className="py-10 text-center text-[13px] text-[#636f7b]">Находок не обнаружено</p>
           ) : (
-            <ul className="mt-4 space-y-3">
+            <ul className="divide-y divide-[#8c9baa]/25">
               {filteredFindings.map((item) => {
                 const location = item.path
                   ? `${item.path}${item.line ? `:${item.line}${item.endLine && item.endLine !== item.line ? `–${item.endLine}` : ""}` : ""}`
@@ -1225,61 +1252,45 @@ function RunCanvasPreviewInner({
                   item.group || item.artifact
                     ? `${item.group ?? ""}${item.group && item.artifact ? ":" : ""}${item.artifact ?? ""}${item.version ? `@${item.version}` : ""}`
                     : "";
+                const meta = [
+                  item.severity || "INFO",
+                  item.category,
+                  item.advisoryId || item.findingClass,
+                  item.isNewVsBaseline ? "NEW" : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ");
+                const sev = (item.severity || "").toUpperCase();
+                const sevDot =
+                  sev === "CRITICAL"
+                    ? "#d92d20"
+                    : sev === "HIGH"
+                      ? "#f97316"
+                      : sev === "MEDIUM"
+                        ? "#facc15"
+                        : "#8c9baa";
                 return (
-                  <li
-                    key={item.findingId}
-                    className="rounded-[16px] border border-[#8c9baa]/70 bg-[#ffffff] p-4"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span
-                          className={`fm-tnum rounded-full px-2.5 py-0.5 text-[11px] font-semibold uppercase ${severityBadgeClass(item.severity)}`}
-                        >
-                          {item.severity || "INFO"}
-                        </span>
-                        <span className="rounded-full border border-[#8c9baa]/60 bg-[#f6faff] px-2.5 py-0.5 text-[11px] font-semibold text-[#000000]">
-                          {item.category}
-                        </span>
-                        {(item.findingClass || item.advisoryId) && (
-                          <span className="fm-mono rounded-full border border-[#8c9baa]/55 px-2.5 py-0.5 text-[11px] font-medium text-[#222222]">
-                            {item.advisoryId || item.findingClass}
-                          </span>
-                        )}
-                        {item.isNewVsBaseline && (
-                          <span className="rounded-full bg-[#fff3c4] px-2 py-0.5 text-[10.5px] font-semibold text-[#664d03]">
-                            NEW
-                          </span>
-                        )}
-                      </div>
-                      <span className="fm-mono text-[11px] text-[#636f7b]">{item.findingId}</span>
-                    </div>
-
+                  <li key={item.findingId} className="py-3.5">
                     {(location || pkg) && (
-                      <p className="fm-mono mt-2 [overflow-wrap:anywhere] text-[12px] font-medium text-[#0050ff]">
+                      <p className="fm-mono [overflow-wrap:anywhere] text-[12px] text-[#636f7b]">
                         {location}
                         {location && pkg ? " · " : ""}
                         {pkg}
                       </p>
                     )}
-
-                    {item.description && (
-                      <p className="mt-1.5 [overflow-wrap:anywhere] text-[13px] leading-[1.45] text-[#000000]">
-                        {item.description}
-                      </p>
-                    )}
-
-                    {item.maskedSnippet && (
-                      <pre className="fm-mono fm-scroll mt-2 overflow-x-auto rounded-[10px] border border-[#8c9baa]/45 bg-[#f8fafc] px-3 py-2 text-[11px] text-[#222222]">
-                        {item.maskedSnippet}
-                      </pre>
-                    )}
-
-                    {item.remediation && (
-                      <p className="mt-2 rounded-[10px] bg-[#c8f0d8]/35 px-3 py-2 [overflow-wrap:anywhere] text-[12px] leading-[1.45] text-[#0f5132]">
-                        <span className="font-semibold">Рекомендация: </span>
-                        {item.remediation}
-                      </p>
-                    )}
+                    <p className="mt-1 flex items-start gap-2 [overflow-wrap:anywhere] text-[13.5px] font-semibold leading-[1.4] text-[#000000]">
+                      <span
+                        aria-hidden="true"
+                        title={sev || "INFO"}
+                        className="mt-[5px] inline-block h-2 w-2 shrink-0 rounded-full"
+                        style={{ backgroundColor: sevDot }}
+                      />
+                      <span>{item.description || item.findingId}</span>
+                    </p>
+                    <p className="mt-1 [overflow-wrap:anywhere] text-[12px] leading-[1.45] text-[#636f7b]">
+                      {meta}
+                      {item.remediation ? ` — ${item.remediation}` : ""}
+                    </p>
                   </li>
                 );
               })}
@@ -1767,8 +1778,16 @@ export function FlowmappRunHistoryView({
       {/* LEFT SIDEBAR: Run List */}
       <aside
         aria-label="Список прогонов"
-        className="flex max-h-[38dvh] w-full shrink-0 flex-col border-b border-[#8c9baa]/50 bg-[#ffffff] md:max-h-none md:w-[310px] md:border-b-0 md:border-r lg:w-[330px]"
+        className="flex max-h-[38dvh] w-full shrink-0 flex-col border-b border-[#8c9baa]/50 bg-[#ffffff] md:max-h-none md:w-[272px] md:border-b-0 md:border-r lg:w-[296px]"
       >
+        <div className="flex min-h-[61px] shrink-0 items-center gap-2 border-b border-[#8c9baa]/45 px-3.5 py-3">
+          <h1 className="text-[18px] font-bold leading-none tracking-[-0.03em] text-[#000000]">
+            Запуски
+          </h1>
+          <span className="fm-tnum rounded-full border border-[#8c9baa]/55 px-2 py-0.5 text-[12px] font-semibold leading-none text-[#222222]">
+            {runs.length}
+          </span>
+        </div>
         {/* Compact Search + Filter Icon */}
         <div className="shrink-0 border-b border-[#8c9baa]/45 p-3">
           <div className="flex items-center gap-1.5">
@@ -1784,7 +1803,7 @@ export function FlowmappRunHistoryView({
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Поиск прогона..."
                 aria-label="Поиск прогона"
-                className="fm-focus min-h-[38px] w-full rounded-[12px] border border-[#8c9baa] bg-[#ffffff] pl-8 pr-8 text-[16px] text-[#000000] placeholder:text-[#636f7b] sm:text-[13px] [&::-webkit-search-cancel-button]:appearance-none"
+                className="fm-focus min-h-[40px] w-full rounded-[12px] border border-[#8c9baa] bg-[#ffffff] pl-8 pr-8 text-[16px] text-[#000000] placeholder:text-[#636f7b] sm:text-[13px] [&::-webkit-search-cancel-button]:appearance-none"
               />
               {searchQuery.length > 0 && (
                 <button
@@ -1810,7 +1829,7 @@ export function FlowmappRunHistoryView({
                     : "Фильтры прогонов"
                 }
                 title="Фильтры прогонов"
-                className={`fm-focus relative inline-flex h-[38px] min-w-[38px] cursor-pointer items-center justify-center gap-1 rounded-full border px-2.5 text-[12px] font-medium transition-colors active:scale-95 ${
+                className={`fm-focus relative inline-flex h-[40px] min-w-[40px] cursor-pointer items-center justify-center gap-1 rounded-full border px-2.5 text-[12px] font-medium transition-colors active:scale-95 ${
                   filtersOpen || activeFiltersCount > 0
                     ? "border-[#0080ff] bg-[#000000] text-[#ffffff]"
                     : "border-[#8c9baa] bg-[#ffffff] text-[#222222] hover:border-[#0080ff]"
@@ -1974,7 +1993,7 @@ export function FlowmappRunHistoryView({
                       type="button"
                       onClick={() => setSelectedRunId(run.id)}
                       aria-current={isSelected ? "true" : undefined}
-                      className={`fm-focus relative flex w-full cursor-pointer flex-col gap-1.5 px-3.5 py-3 text-left transition-colors ${
+                      className={`fm-focus relative flex w-full cursor-pointer flex-col gap-2 px-3.5 py-3.5 text-left transition-colors ${
                         isSelected
                           ? "bg-[#c5e0fb]/30"
                           : "bg-[#ffffff] hover:bg-[#f6faff]"
@@ -1983,7 +2002,7 @@ export function FlowmappRunHistoryView({
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex min-w-0 items-center gap-2">
                           <span
-                            className={`fm-tnum text-[13px] font-semibold tracking-[-0.015em] ${
+                            className={`fm-tnum whitespace-nowrap text-[13px] font-semibold tracking-[-0.015em] ${
                               isSelected ? "text-[#0050ff]" : "text-[#000000]"
                             }`}
                           >

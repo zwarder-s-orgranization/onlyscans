@@ -75,11 +75,14 @@ type activeTask struct {
 }
 
 type workerLink struct {
-	mu         sync.Mutex
-	send       func(*secflowv1.ConnectResponse) error
-	instanceID string
-	plugins    []string
-	draining   atomic.Bool
+	mu             sync.Mutex
+	send           func(*secflowv1.ConnectResponse) error
+	instanceID     string
+	installationID string
+	plugins        []string
+	draining       atomic.Bool
+	inFlight       atomic.Int32
+	maxConcurrency atomic.Int32
 }
 
 func (w *workerLink) Send(msg *secflowv1.ConnectResponse) error {
@@ -117,13 +120,20 @@ type Server struct {
 	secrets map[string]*secretRec
 	tokens  map[string]*tokenRec
 
-	plugMu             sync.Mutex
-	plugins            map[string]*secflowv1.PluginManifest
-	workers            map[string][]*workerLink
-	workerRR           map[string]uint64
-	pluginRegisteredAt map[string]*timestamppb.Timestamp
-	pluginLastSeen     map[string]*timestamppb.Timestamp
-	pluginWatch        []chan *secflowv1.PluginRegistryEvent
+	plugMu              sync.Mutex
+	plugins             map[string]*secflowv1.PluginManifest
+	pluginDisabled      map[string]bool
+	workers             map[string][]*workerLink
+	workerRR            map[string]uint64
+	pluginRegisteredAt  map[string]*timestamppb.Timestamp
+	pluginLastSeen      map[string]*timestamppb.Timestamp
+	pluginWatch         []chan *secflowv1.PluginRegistryEvent
+	installations       map[string]*installationRec
+	pluginInstallation  map[string]string
+	pluginApprovalState map[string]string
+	pluginDBWorkers     map[string]int32
+	installWatch        []chan *secflowv1.PluginInstallationEvent
+	workerWaiters       map[string][]chan struct{}
 
 	catMu    sync.Mutex
 	catalogs map[string]*secflowv1.VulnerabilityCatalog
@@ -131,37 +141,52 @@ type Server struct {
 	mcpMu sync.Mutex
 	mcps  map[string]*secflowv1.MCPConnection
 
-	serviceTK string
-	boxKey    []byte
-	leaseKey  []byte
-	pool      *pgxpool.Pool
-	ingest    secflowv1.SourceIngesterServiceClient
-	wake      chan struct{}
+	savedMu    sync.Mutex
+	savedNodes map[string]*secflowv1.SavedNode
+
+	serverID     string
+	serviceTK    string
+	boxKey       []byte
+	leaseKey     []byte
+	pool         *pgxpool.Pool
+	ingest       secflowv1.SourceIngesterServiceClient
+	wake         chan struct{}
+	workerScaler WorkerScaler
+	taskWG       sync.WaitGroup
 }
 
 func newServer() *Server {
 	now := timestamppb.Now()
 	s := &Server{
-		workflows:          map[string]*secflowv1.Workflow{},
-		templates:          map[string]*secflowv1.WorkflowTemplate{},
-		runs:               map[string]*runState{},
-		secrets:            map[string]*secretRec{},
-		tokens:             map[string]*tokenRec{},
-		catalogs:           map[string]*secflowv1.VulnerabilityCatalog{},
-		mcps:               map[string]*secflowv1.MCPConnection{},
-		plugins:            map[string]*secflowv1.PluginManifest{},
-		workers:            map[string][]*workerLink{},
-		workerRR:           map[string]uint64{},
-		pluginRegisteredAt: map[string]*timestamppb.Timestamp{},
-		pluginLastSeen:     map[string]*timestamppb.Timestamp{},
-		results:            map[string]chan *secflowv1.NodeResult{},
-		activeTasks:        map[string]activeTask{},
-		trackedQueue:       map[string]string{},
-		idem:               map[string]string{},
-		serviceTK:          envutil.Get("SERVICE_TOKEN", "dev-service-token"),
-		boxKey:             secretbox.Key(envutil.Get("SECRET_KEY", envutil.Get("SERVICE_TOKEN", "dev-service-token"))),
-		leaseKey:           []byte(envutil.Get("LEASE_SECRET", envutil.Get("SERVICE_TOKEN", "dev-service-token"))),
-		wake:               make(chan struct{}, 1),
+		workflows:           map[string]*secflowv1.Workflow{},
+		templates:           map[string]*secflowv1.WorkflowTemplate{},
+		runs:                map[string]*runState{},
+		secrets:             map[string]*secretRec{},
+		tokens:              map[string]*tokenRec{},
+		catalogs:            map[string]*secflowv1.VulnerabilityCatalog{},
+		mcps:                map[string]*secflowv1.MCPConnection{},
+		savedNodes:          map[string]*secflowv1.SavedNode{},
+		plugins:             map[string]*secflowv1.PluginManifest{},
+		pluginDisabled:      map[string]bool{},
+		workers:             map[string][]*workerLink{},
+		workerRR:            map[string]uint64{},
+		pluginRegisteredAt:  map[string]*timestamppb.Timestamp{},
+		pluginLastSeen:      map[string]*timestamppb.Timestamp{},
+		installations:       map[string]*installationRec{},
+		pluginInstallation:  map[string]string{},
+		pluginApprovalState: map[string]string{},
+		pluginDBWorkers:     map[string]int32{},
+		workerWaiters:       map[string][]chan struct{}{},
+		results:             map[string]chan *secflowv1.NodeResult{},
+		activeTasks:         map[string]activeTask{},
+		trackedQueue:        map[string]string{},
+		idem:                map[string]string{},
+		serverID:            id("orch"),
+		serviceTK:           envutil.Get("SERVICE_TOKEN", "dev-service-token"),
+		boxKey:              secretbox.Key(envutil.Get("SECRET_KEY", envutil.Get("SERVICE_TOKEN", "dev-service-token"))),
+		leaseKey:            []byte(envutil.Get("LEASE_SECRET", envutil.Get("SERVICE_TOKEN", "dev-service-token"))),
+		wake:                make(chan struct{}, 1),
+		workerScaler:        noopWorkerScaler{},
 	}
 	for _, m := range builtinManifests() {
 		pid := m.GetPluginId()

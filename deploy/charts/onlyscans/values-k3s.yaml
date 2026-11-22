@@ -1,0 +1,96 @@
+# Preset tuned for lightweight k3s clusters (single-node or small multi-node).
+# Usage:
+#   helm upgrade --install onlyscans deploy/charts/onlyscans -f deploy/charts/onlyscans/values-k3s.yaml
+
+global:
+  env: development
+  imageRegistry: onlyscans
+  imageTag: local
+  imagePullPolicy: IfNotPresent
+  storageClassName: local-path
+  publicUrl: "http://onlyscans.local"
+  corsAllowOrigins: "http://onlyscans.local,http://127.0.0.1,http://localhost:3000"
+
+auth:
+  requireWorkerServiceToken: true
+
+postgres:
+  storageSize: 5Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+garage:
+  storageSize: 5Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+orchestrator:
+  replicas: 1
+  maxConcurrentTasks: 16
+  pdb:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+edgeGateway:
+  replicas: 1
+  pdb:
+    enabled: false
+
+web:
+  replicas: 1
+
+workerScaling:
+  mode: orchestrator
+  precreatePureWorkers: false
+  idleTtlSeconds: 90
+  defaultMaxReplicas: 4
+  pools:
+    workerKotlin:
+      minReplicas: 0
+      maxReplicas: 3
+      tasksPerWorker: 1
+      cooldownSeconds: 90
+      cpuRequest: 200m
+      cpuLimit: 1000m
+      memoryRequest: 384Mi
+      memoryLimit: 1280Mi
+    workerSca:
+      minReplicas: 0
+      maxReplicas: 4
+      tasksPerWorker: 2
+      cooldownSeconds: 90
+    sbomService:
+      minReplicas: 0
+      maxReplicas: 4
+      tasksPerWorker: 2
+      cooldownSeconds: 90
+
+pluginProvisioner:
+  enabled: true
+  driver: k8s
+  imageRegistryAllowlist: "ghcr.io/zwarder-s-orgranization/onlyscans,onlyscans,ghcr.io/secflow"
+
+ingress:
+  enabled: true
+  className: traefik
+  host: onlyscans.local
+
+# k3s default kube-router / flannel supports NetworkPolicy when enabled; keep true for zero-egress sandboxing.
+networkPolicies:
+  enabled: true

@@ -32,20 +32,40 @@ import {
   type UserRole,
 } from "@/data/workflows-workspace-data";
 import { clearSession } from "@/lib/session";
+import { InkThemeToggle } from "@/components/theme/InkThemeToggle";
+import { UserAvatar } from "@/components/settings/UserAvatar";
 import { useWorkspacePreview } from "../WorkspacePreviewContext";
 import type { FeedbackNotice } from "../useWorkflowsWorkspace";
 
-export function FlowmappLogoMark() {
+export function FlowmappLogoMark({ variant = "responsive" }: { variant?: "responsive" | "full" }) {
+  if (variant === "full") {
+    return (
+      <img
+        src="/onlyscans-logo.png"
+        alt="onlyscans"
+        width={151}
+        height={26}
+        className="fm-brand-logo h-[26px] w-auto shrink-0 select-none"
+      />
+    );
+  }
+
   return (
-    <span
-      aria-hidden="true"
-      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] bg-[#000000] text-[#ffffff]"
-    >
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-        <circle cx="4.5" cy="4.5" r="2" stroke="#ffffff" strokeWidth="1.5" />
-        <circle cx="11.5" cy="11.5" r="2" stroke="#0080ff" strokeWidth="1.5" />
-        <path d="M6.5 4.5H10C10.8 4.5 11.5 5.2 11.5 6V9.5" stroke="#ffffff" strokeWidth="1.5" />
-      </svg>
+    <span className="inline-flex shrink-0 items-center">
+      <img
+        src="/onlyscans-mark.png"
+        alt="onlyscans"
+        width={43}
+        height={22}
+        className="fm-brand-logo block h-[22px] w-auto select-none min-[400px]:hidden"
+      />
+      <img
+        src="/onlyscans-logo.png"
+        alt="onlyscans"
+        width={140}
+        height={24}
+        className="fm-brand-logo hidden h-[24px] w-auto select-none min-[400px]:block sm:h-[26px]"
+      />
     </span>
   );
 }
@@ -71,11 +91,6 @@ export function FlowmappHeader({
   const user = ROLE_LABELS[role];
   const displayEmail = email || user.email;
   const displayName = email || user.name;
-  const initials = displayName
-    .split(" ")
-    .map((p) => p[0])
-    .join("")
-    .slice(0, 2);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -97,28 +112,30 @@ export function FlowmappHeader({
 
   return (
     <header className="sticky top-0 z-30 h-[52px] border-b border-[#8c9baa]/45 bg-[#ffffff]">
-      <div className="mx-auto flex h-full max-w-[1200px] items-center justify-between gap-2 px-3 sm:gap-4 sm:px-6">
-        <div className="flex min-w-0 items-center gap-3 sm:gap-8">
+      <div className="grid h-full w-full grid-cols-[auto_1fr_auto] items-center gap-2 px-3 sm:grid-cols-[1fr_auto_1fr] sm:gap-4 sm:px-5 lg:px-6">
+        <div className="flex min-w-0 items-center justify-self-start">
           {onSelectSection ? (
             <button
               type="button"
               onClick={() => onSelectSection("workflows")}
-              className="fm-focus inline-flex shrink-0 cursor-pointer items-center gap-2 rounded-[6px] py-1 text-[14px] font-bold tracking-[-0.03em] text-[#000000] sm:text-[15px]"
+              className="fm-focus inline-flex shrink-0 cursor-pointer items-center rounded-[6px] py-1"
             >
               <FlowmappLogoMark />
-              <span className="hidden min-[400px]:inline">SecFlow</span>
             </button>
           ) : (
             <Link
               href="/"
-              className="fm-focus inline-flex shrink-0 items-center gap-2 rounded-[6px] py-1 text-[14px] font-bold tracking-[-0.03em] text-[#000000] sm:text-[15px]"
+              className="fm-focus inline-flex shrink-0 items-center rounded-[6px] py-1"
             >
               <FlowmappLogoMark />
-              <span className="hidden min-[400px]:inline">SecFlow</span>
             </Link>
           )}
+        </div>
 
-          <nav aria-label="Основная навигация" className="flex items-center gap-3 sm:gap-7">
+        <nav
+          aria-label="Основная навигация"
+          className="flex items-center justify-center justify-self-center gap-3 sm:gap-7"
+        >
             {onSelectSection ? (
               <button
                 type="button"
@@ -205,19 +222,20 @@ export function FlowmappHeader({
               </Link>
             )}
           </nav>
-        </div>
 
-        <div className="relative" ref={menuRef}>
-          <button
-            type="button"
-            onClick={() => setMenuOpen((v) => !v)}
-            aria-label={`Меню пользователя (${displayName})`}
-            aria-expanded={menuOpen}
-            aria-haspopup="menu"
-            className="fm-focus inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-[#8c9baa] bg-[#ffffff] text-[12px] font-semibold text-[#000000] transition-colors hover:border-[#0080ff] hover:text-[#0080ff]"
-          >
-            {initials}
-          </button>
+        <div className="flex items-center justify-self-end gap-2">
+          <InkThemeToggle />
+          <div className="relative" ref={menuRef}>
+            <button
+              type="button"
+              onClick={() => setMenuOpen((v) => !v)}
+              aria-label={`Меню пользователя (${displayName})`}
+              aria-expanded={menuOpen}
+              aria-haspopup="menu"
+              className="fm-focus inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-full ring-1 ring-[#8c9baa]/60 transition-[box-shadow,transform] hover:ring-2 hover:ring-[#0080ff] active:scale-[0.96]"
+            >
+              <UserAvatar seed={displayEmail} size={36} />
+            </button>
 
           {menuOpen && (
             <div
@@ -269,6 +287,7 @@ export function FlowmappHeader({
               </div>
             </div>
           )}
+          </div>
         </div>
       </div>
     </header>
@@ -446,7 +465,7 @@ export function FlowmappEmptyState({
         </h2>
         <p className="mx-auto mt-3.5 max-w-[56ch] text-[16px] leading-[1.5] text-[#636f7b]">
           Начните с готового шаблона (включая аудит учебного проекта Repair Desk) или опишите
-          сценарий словами — SecFlow соберёт граф для проверки.
+          сценарий словами — onlyscans соберёт граф для проверки.
         </p>
 
         {canEdit && (

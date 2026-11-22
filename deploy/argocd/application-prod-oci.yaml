@@ -1,0 +1,56 @@
+# Argo CD Application for production Kubernetes consuming the published OCI Helm chart.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: onlyscans-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: onlyscans
+  sources:
+    - repoURL: ghcr.io/zwarder-s-orgranization/charts
+      chart: onlyscans
+      targetRevision: "0.1.*"
+      helm:
+        releaseName: onlyscans
+        valueFiles:
+          - $values/deploy/charts/onlyscans/values-prod.yaml
+        valuesObject:
+          global:
+            imageRegistry: ghcr.io/zwarder-s-orgranization/onlyscans
+            imageTag: latest
+          observability:
+            enabled: true
+    - repoURL: https://github.com/zwarder-s-orgranization/hz_chto_viydet.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: secflow-app
+  # Preserve replicas managed dynamically by HPA (secflow-app) and orchestrator K8s scaler (secflow-workers).
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      namespace: secflow-workers
+      jsonPointers:
+        - /spec/replicas
+    - group: apps
+      kind: Deployment
+      namespace: secflow-app
+      jsonPointers:
+        - /spec/replicas
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

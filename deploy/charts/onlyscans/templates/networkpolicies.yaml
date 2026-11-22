@@ -1,0 +1,342 @@
+{{- if .Values.networkPolicies.enabled }}
+# ---------------------------------------------------------------------------
+# secflow-workers: Default-deny + zero internet egress for internal analyzers
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: {{ .Values.namespaces.workers }}
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+# Internal-only analyzers (worker-kotlin, worker-sca, sbom-service):
+# ZERO internet egress; allowed ONLY to CoreDNS, orchestrator gRPC, and Garage S3.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-internal-only-workers
+  namespace: {{ .Values.namespaces.workers }}
+spec:
+  podSelector:
+    matchLabels:
+      secflow.io/egress-tier: internal-only
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.app }}
+          podSelector:
+            matchLabels:
+              app: orchestrator
+      ports:
+        - protocol: TCP
+          port: 50051
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.system }}
+          podSelector:
+            matchLabels:
+              app: garage
+      ports:
+        - protocol: TCP
+          port: 3900
+    {{- if .Values.observability.enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.observability }}
+          podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4318
+    {{- end }}
+---
+# Boundary workers with scoped external egress (ai-service, notify-service, mcp-bridge).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-external-workers
+  namespace: {{ .Values.namespaces.workers }}
+spec:
+  podSelector:
+    matchLabels:
+      secflow.io/egress-tier: egress-external
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.app }}
+          podSelector:
+            matchLabels:
+              app: edge-gateway
+      ports:
+        - protocol: TCP
+          port: 50053
+        - protocol: TCP
+          port: 50054
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.app }}
+          podSelector:
+            matchLabels:
+              app: orchestrator
+      ports:
+        - protocol: TCP
+          port: 50054
+    {{- if .Values.observability.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.observability }}
+          podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 8086
+        - protocol: TCP
+          port: 8087
+        - protocol: TCP
+          port: 8088
+    {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.app }}
+          podSelector:
+            matchLabels:
+              app: orchestrator
+      ports:
+        - protocol: TCP
+          port: 50051
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.app }}
+          podSelector:
+            matchLabels:
+              app: edge-gateway
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.system }}
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 3900
+        - protocol: TCP
+          port: 11434
+        - protocol: TCP
+          port: 1025
+    {{- if .Values.observability.enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.observability }}
+          podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4318
+    {{- end }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 587
+        - protocol: TCP
+          port: 465
+---
+# ---------------------------------------------------------------------------
+# secflow-sandbox: Default-deny baseline (per-installation rules added by plugin-provisioner)
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: {{ .Values.namespaces.sandbox }}
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+# Declarative runtime INTERNAL_ONLY pool (ANALYZER / LOGIC): zero internet egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-declarative-runtime-internal
+  namespace: {{ .Values.namespaces.sandbox }}
+spec:
+  podSelector:
+    matchLabels:
+      secflow.io/declarative-runtime: internal
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.app }}
+          podSelector:
+            matchLabels:
+              app: orchestrator
+      ports:
+        - protocol: TCP
+          port: 50051
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.system }}
+          podSelector:
+            matchLabels:
+              app: garage
+      ports:
+        - protocol: TCP
+          port: 3900
+    {{- if .Values.observability.enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.observability }}
+          podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4318
+    {{- end }}
+---
+# Declarative runtime EGRESS_EXTERNAL pool (ACTION): ZERO access to secflow-system (Garage/Postgres/Redis).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-declarative-runtime-action
+  namespace: {{ .Values.namespaces.sandbox }}
+spec:
+  podSelector:
+    matchLabels:
+      secflow.io/declarative-runtime: action
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.app }}
+          podSelector:
+            matchLabels:
+              app: orchestrator
+      ports:
+        - protocol: TCP
+          port: 50051
+    {{- if .Values.observability.enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.observability }}
+          podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4318
+    {{- end }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 127.0.0.0/8
+      ports:
+        - protocol: TCP
+          port: 443
+        {{- if ne .Values.global.env "production" }}
+        - protocol: TCP
+          port: 80
+        {{- end }}
+---
+# ---------------------------------------------------------------------------
+# secflow-system: Internal cluster access only
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: restrict-system-ingress
+  namespace: {{ .Values.namespaces.system }}
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.app }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.workers }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.sandbox }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.system }}
+{{- end }}

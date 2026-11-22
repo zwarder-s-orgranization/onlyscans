@@ -1,0 +1,106 @@
+{{- if .Values.garage.initJob.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: garage-init
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    app: garage-init
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+---
+{{- range $ns := list .Values.namespaces.app .Values.namespaces.workers .Values.namespaces.sandbox }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secflow-garage-init-secrets
+  namespace: {{ $ns }}
+  labels:
+    {{- include "secflow.commonLabels" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ $.Values.garage.secretName | quote }}]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secflow-garage-init-secrets
+  namespace: {{ $ns }}
+  labels:
+    {{- include "secflow.commonLabels" $ | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: {{ $.Values.namespaces.system }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secflow-garage-init-secrets
+---
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: garage-init
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    app: garage-init
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+  {{- if .Values.garage.initJob.asHelmHook }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+  {{- end }}
+spec:
+  backoffLimit: {{ .Values.garage.initJob.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        app: garage-init
+        {{- include "secflow.commonLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: garage-init
+      restartPolicy: OnFailure
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "secflow.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: garage-init
+          image: {{ include "secflow.image" (dict "root" . "repo" .Values.garage.initJob.imageRepository) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          env:
+            - name: GARAGE_ENDPOINT
+              value: {{ include "secflow.garageEndpoint" . | quote }}
+            - name: GARAGE_ADMIN_URL
+              value: {{ include "secflow.garageAdminUrl" . | quote }}
+            - name: GARAGE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-garage-admin
+                  key: GARAGE_ADMIN_TOKEN
+            - name: GARAGE_K8S_SECRET_NAME
+              value: {{ .Values.garage.secretName | quote }}
+            - name: GARAGE_K8S_SECRET_NAMESPACES
+              value: {{ printf "%s,%s,%s" .Values.namespaces.app .Values.namespaces.workers .Values.namespaces.sandbox | quote }}
+            - name: GARAGE_CRED_FILE
+              value: /tmp/garage.json
+            - name: DEFAULT_CATALOG_PATH
+              value: /mentor-training/vulnerability-database/vulnerabilities.json
+          securityContext:
+            {{- include "secflow.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+{{- end }}

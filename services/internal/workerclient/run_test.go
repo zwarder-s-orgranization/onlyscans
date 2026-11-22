@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	secflowv1 "github.com/secflow/secflow/packages/proto/gen/go/secflow/v1"
 )
@@ -269,5 +271,190 @@ func TestWorkerHeartbeatProgressCancelAndDrain(t *testing.T) {
 	}
 	if !cs.closedSend.Load() {
 		t.Fatal("expected stream CloseSend on drain")
+	}
+}
+
+type errorRecvStream struct {
+	fakeStream
+	recvErr error
+}
+
+func (s *errorRecvStream) Recv() (*secflowv1.ConnectResponse, error) {
+	return nil, s.recvErr
+}
+
+func TestRunWithConfig_AttachesPluginTokenMetadata(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		pluginToken  string
+		serviceToken string
+		wantKey      string
+		wantVal      string
+		wantAbsent   string
+	}{
+		{
+			name:        "attaches x-plugin-token and preserves existing metadata",
+			pluginToken: "tok_secret_123",
+			wantKey:     "x-plugin-token",
+			wantVal:     "tok_secret_123",
+		},
+		{
+			name:         "attaches x-service-token when plugin token empty",
+			serviceToken: "svc_secret_456",
+			wantKey:      "x-service-token",
+			wantVal:      "svc_secret_456",
+			wantAbsent:   "x-plugin-token",
+		},
+		{
+			name:       "attaches no auth headers when tokens empty",
+			wantAbsent: "x-plugin-token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var seenMD metadata.MD
+			fc := &fakeWorkerClient{
+				fn: func(ctx context.Context) (secflowv1.WorkerService_ConnectClient, error) {
+					seenMD, _ = metadata.FromOutgoingContext(ctx)
+					return &fakeStream{
+						ctx: ctx,
+						msgs: []*secflowv1.ConnectResponse{
+							{Payload: &secflowv1.ConnectResponse_DrainRequest{DrainRequest: &secflowv1.DrainRequest{Reason: "done"}}},
+						},
+					}, nil
+				},
+			}
+
+			baseCtx := metadata.NewOutgoingContext(t.Context(), metadata.Pairs("traceparent", "00-abc-def-01"))
+			err := runClientWithConfig(baseCtx, fc, Config{
+				WorkerID:         "w-meta",
+				Namespace:        "secflow-sandbox",
+				PluginToken:      tt.pluginToken,
+				ServiceToken:     tt.serviceToken,
+				InitialBackoff:   5 * time.Millisecond,
+				MaxBackoff:       20 * time.Millisecond,
+				DefaultHeartbeat: 50 * time.Millisecond,
+				Handle:           func(context.Context, *secflowv1.NodeTask) *secflowv1.NodeResult { return nil },
+			})
+			if err != nil {
+				t.Fatalf("runClientWithConfig: %v", err)
+			}
+			if got := seenMD.Get("traceparent"); len(got) != 1 || got[0] != "00-abc-def-01" {
+				t.Fatalf("traceparent overwritten: %v", got)
+			}
+			if tt.wantKey != "" {
+				if got := seenMD.Get(tt.wantKey); len(got) != 1 || got[0] != tt.wantVal {
+					t.Fatalf("metadata %s = %v, want [%s]", tt.wantKey, got, tt.wantVal)
+				}
+			}
+			if tt.wantAbsent != "" {
+				if got := seenMD.Get(tt.wantAbsent); len(got) != 0 {
+					t.Fatalf("metadata %s = %v, want absent", tt.wantAbsent, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRunWithConfig_StopsOnUnauthenticatedAndPermissionDenied(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		setup    func() *fakeWorkerClient
+		wantErr  error
+		wantAuth bool
+	}{
+		{
+			name: "Connect returns codes.Unauthenticated",
+			setup: func() *fakeWorkerClient {
+				return &fakeWorkerClient{
+					fn: func(context.Context) (secflowv1.WorkerService_ConnectClient, error) {
+						return nil, status.Error(codes.Unauthenticated, "invalid token")
+					},
+				}
+			},
+			wantErr: ErrUnauthenticated,
+		},
+		{
+			name: "stream.Recv returns codes.Unauthenticated",
+			setup: func() *fakeWorkerClient {
+				return &fakeWorkerClient{
+					fn: func(ctx context.Context) (secflowv1.WorkerService_ConnectClient, error) {
+						return &errorRecvStream{
+							fakeStream: fakeStream{ctx: ctx},
+							recvErr:    status.Error(codes.Unauthenticated, "missing x-plugin-token"),
+						}, nil
+					},
+				}
+			},
+			wantErr: ErrUnauthenticated,
+		},
+		{
+			name: "stream.Recv returns codes.PermissionDenied",
+			setup: func() *fakeWorkerClient {
+				return &fakeWorkerClient{
+					fn: func(ctx context.Context) (secflowv1.WorkerService_ConnectClient, error) {
+						return &errorRecvStream{
+							fakeStream: fakeStream{ctx: ctx},
+							recvErr:    status.Error(codes.PermissionDenied, "builtin override forbidden"),
+						}, nil
+					},
+				}
+			},
+			wantErr: ErrPermissionDenied,
+		},
+		{
+			name: "ManifestAck UNAUTHENTICATED stops with ErrManifestRejected and ErrUnauthenticated",
+			setup: func() *fakeWorkerClient {
+				return &fakeWorkerClient{
+					fn: func(ctx context.Context) (secflowv1.WorkerService_ConnectClient, error) {
+						return &fakeStream{
+							ctx: ctx,
+							msgs: []*secflowv1.ConnectResponse{
+								{
+									Payload: &secflowv1.ConnectResponse_ManifestAck{
+										ManifestAck: &secflowv1.ManifestAck{
+											Accepted:        false,
+											RejectionCode:   secflowv1.ManifestRejectionCode_MANIFEST_REJECTION_CODE_UNAUTHENTICATED,
+											RejectionReason: "invalid x-plugin-token",
+										},
+									},
+								},
+							},
+						}, nil
+					},
+				}
+			},
+			wantErr:  ErrManifestRejected,
+			wantAuth: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fc := tt.setup()
+			err := runClientWithConfig(t.Context(), fc, Config{
+				WorkerID:       "w-auth",
+				InitialBackoff: 5 * time.Millisecond,
+				MaxBackoff:     20 * time.Millisecond,
+				Handle:         func(context.Context, *secflowv1.NodeTask) *secflowv1.NodeResult { return nil },
+			})
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want errors.Is(..., %v)", err, tt.wantErr)
+			}
+			if tt.wantAuth && !errors.Is(err, ErrUnauthenticated) {
+				t.Fatalf("err = %v, want errors.Is(..., ErrUnauthenticated)", err)
+			}
+			if got := fc.connects.Load(); got != 1 {
+				t.Fatalf("connect attempts = %d, want 1", got)
+			}
+		})
 	}
 }

@@ -1,0 +1,659 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orchestrator
+  namespace: secflow-app
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secflow-orchestrator-worker-scaler
+  namespace: secflow-workers
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secflow-orchestrator-worker-scaler
+  namespace: secflow-workers
+subjects:
+  - kind: ServiceAccount
+    name: orchestrator
+    namespace: secflow-app
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secflow-orchestrator-worker-scaler
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator
+  namespace: secflow-app
+  labels:
+    app: orchestrator
+spec:
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+    - name: http
+      port: 8081
+      targetPort: http
+  selector:
+    app: orchestrator
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator
+  namespace: secflow-app
+  labels:
+    app: orchestrator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orchestrator
+  template:
+    metadata:
+      labels:
+        app: orchestrator
+    spec:
+      serviceAccountName: orchestrator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: orchestrator
+          image: ghcr.io/secflow/orchestrator:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: grpc
+              containerPort: 50051
+            - name: http
+              containerPort: 8081
+          env:
+            - name: SECFLOW_ENV
+              value: development
+            - name: GRPC_ADDR
+              value: ":50051"
+            - name: HTTP_ADDR
+              value: ":8081"
+            - name: ORCHESTRATOR_MAX_CONCURRENT_TASKS
+              value: "32"
+            - name: REQUIRE_WORKER_SERVICE_TOKEN
+              value: "1"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-db
+                  key: DATABASE_URL
+            - name: SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-auth
+                  key: SERVICE_TOKEN
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-auth
+                  key: SECRET_KEY
+            - name: LEASE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-auth
+                  key: LEASE_SECRET
+            - name: INGESTER_ADDR
+              value: source-ingester.secflow-app.svc.cluster.local:50052
+            - name: NOTIFY_ADDR
+              value: notify-service.secflow-workers.svc.cluster.local:50054
+            - name: GARAGE_ENDPOINT
+              value: http://garage.secflow-system.svc.cluster.local:3900
+            - name: GARAGE_ADMIN_URL
+              value: http://garage.secflow-system.svc.cluster.local:3903
+            - name: GARAGE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-garage-admin
+                  key: GARAGE_ADMIN_TOKEN
+            - name: GARAGE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-garage-creds
+                  key: GARAGE_ACCESS_KEY
+                  optional: true
+            - name: GARAGE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-garage-creds
+                  key: GARAGE_SECRET_KEY
+                  optional: true
+            - name: SECFLOW_PUBLIC_URL
+              value: http://secflow.local
+            - name: REPO_ALLOWLIST
+              value: github.com/TBagirov/training
+            - name: WORKER_SCALER_DRIVER
+              value: k8s
+            - name: WORKERS_NAMESPACE
+              value: secflow-workers
+            - name: ORCHESTRATOR_INTERNAL_ADDR
+              value: orchestrator.secflow-app.svc.cluster.local:50051
+            - name: WORKER_GARAGE_SECRET_NAME
+              value: secflow-garage-creds
+            - name: WORKER_AUTH_SECRET_NAME
+              value: secflow-worker-auth
+            - name: WORKER_DB_SECRET_NAME
+              value: secflow-db
+            - name: WORKER_REDIS_ADDR
+              value: redis.secflow-system.svc.cluster.local:6379
+            - name: WORKER_IMAGE_REGISTRY
+              value: ghcr.io/secflow
+            - name: WORKER_IMAGE_TAG
+              value: "1.0.0"
+            - name: WORKER_IMAGE_PULL_POLICY
+              value: IfNotPresent
+            - name: WORKER_PROVISION_TIMEOUT_SECONDS
+              value: "90"
+            - name: WORKER_SCALE_WAIT_TIMEOUT_SECONDS
+              value: "15"
+            - name: WORKER_RECONCILE_INTERVAL_SECONDS
+              value: "10"
+            - name: WORKER_IDLE_TTL_SECONDS
+              value: "120"
+            - name: WORKER_MAX_REPLICAS
+              value: "5"
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: source-ingester
+  namespace: secflow-app
+  labels:
+    app: source-ingester
+spec:
+  ports:
+    - name: grpc
+      port: 50052
+      targetPort: grpc
+    - name: http
+      port: 8082
+      targetPort: http
+  selector:
+    app: source-ingester
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: source-ingester
+  namespace: secflow-app
+  labels:
+    app: source-ingester
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: source-ingester
+  template:
+    metadata:
+      labels:
+        app: source-ingester
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: source-ingester
+          image: ghcr.io/secflow/source-ingester:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: grpc
+              containerPort: 50052
+            - name: http
+              containerPort: 8082
+          env:
+            - name: GRPC_ADDR
+              value: ":50052"
+            - name: HTTP_ADDR
+              value: ":8082"
+            - name: ORCHESTRATOR_ADDR
+              value: orchestrator.secflow-app.svc.cluster.local:50051
+            - name: REPO_ALLOWLIST
+              value: github.com/TBagirov/training
+            - name: GARAGE_ENDPOINT
+              value: http://garage.secflow-system.svc.cluster.local:3900
+            - name: GARAGE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-garage-creds
+                  key: GARAGE_ACCESS_KEY
+                  optional: true
+            - name: GARAGE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-garage-creds
+                  key: GARAGE_SECRET_KEY
+                  optional: true
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: edge-gateway
+  namespace: secflow-app
+  labels:
+    app: edge-gateway
+spec:
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app: edge-gateway
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edge-gateway
+  namespace: secflow-app
+  labels:
+    app: edge-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: edge-gateway
+  template:
+    metadata:
+      labels:
+        app: edge-gateway
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: edge-gateway
+          image: ghcr.io/secflow/edge-gateway:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SECFLOW_ENV
+              value: development
+            - name: HTTP_ADDR
+              value: ":8080"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-db
+                  key: DATABASE_URL
+            - name: REDIS_ADDR
+              value: redis.secflow-system.svc.cluster.local:6379
+            - name: ORCHESTRATOR_ADDR
+              value: orchestrator.secflow-app.svc.cluster.local:50051
+            - name: INGESTER_ADDR
+              value: source-ingester.secflow-app.svc.cluster.local:50052
+            - name: AI_ADDR
+              value: ai-service.secflow-workers.svc.cluster.local:50053
+            - name: NOTIFY_ADDR
+              value: notify-service.secflow-workers.svc.cluster.local:50054
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-auth
+                  key: JWT_SECRET
+            - name: SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-auth
+                  key: SERVICE_TOKEN
+            - name: RATE_LIMIT_PER_MINUTE
+              value: "120"
+            - name: CORS_ALLOW_ORIGINS
+              value: http://secflow.local,http://localhost:3000
+            - name: GARAGE_ENDPOINT
+              value: http://garage.secflow-system.svc.cluster.local:3900
+            - name: GARAGE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-garage-creds
+                  key: GARAGE_ACCESS_KEY
+                  optional: true
+            - name: GARAGE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-garage-creds
+                  key: GARAGE_SECRET_KEY
+                  optional: true
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: secflow-app
+  labels:
+    app: web
+spec:
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+  selector:
+    app: web
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: secflow-app
+  labels:
+    app: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web
+          image: ghcr.io/secflow/web:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: NEXT_PUBLIC_API_URL
+              value: http://secflow.local
+            - name: PORT
+              value: "3000"
+            - name: HOSTNAME
+              value: "0.0.0.0"
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: plugin-provisioner
+  namespace: secflow-app
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secflow-plugin-provisioner
+  namespace: secflow-sandbox
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secflow-plugin-provisioner
+  namespace: secflow-sandbox
+subjects:
+  - kind: ServiceAccount
+    name: plugin-provisioner
+    namespace: secflow-app
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secflow-plugin-provisioner
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plugin-provisioner
+  namespace: secflow-app
+  labels:
+    app: plugin-provisioner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: plugin-provisioner
+  template:
+    metadata:
+      labels:
+        app: plugin-provisioner
+    spec:
+      serviceAccountName: plugin-provisioner
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: plugin-provisioner
+          image: ghcr.io/secflow/plugin-provisioner:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8089
+          env:
+            - name: HTTP_ADDR
+              value: ":8089"
+            - name: PROVISIONER_DRIVER
+              value: k8s
+            - name: SECFLOW_ENV
+              value: development
+            - name: SANDBOX_NAMESPACE
+              value: secflow-sandbox
+            - name: ORCHESTRATOR_ADDR
+              value: orchestrator.secflow-app.svc.cluster.local:50051
+            - name: ORCHESTRATOR_NAMESPACE
+              value: secflow-app
+            - name: GARAGE_ENDPOINT
+              value: http://garage.secflow-system.svc.cluster.local:3900
+            - name: GARAGE_NAMESPACE
+              value: secflow-system
+            - name: PLUGIN_IMAGE_REGISTRY_ALLOWLIST
+              value: ghcr.io/secflow,secflow
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-db
+                  key: DATABASE_URL
+            - name: GARAGE_RO_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-garage-creds
+                  key: ACCESS_KEY_ID
+                  optional: true
+            - name: GARAGE_RO_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-garage-creds
+                  key: SECRET_ACCESS_KEY
+                  optional: true
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10

@@ -1,0 +1,331 @@
+# Default values for OnlyScans Kubernetes (k8s / k3s) deployment.
+# Override with values-k3s.yaml, values-local-k8s.yaml, or values-prod.yaml.
+
+global:
+  env: production
+  imageRegistry: ghcr.io/zwarder-s-orgranization/onlyscans
+  imageTag: "1.0.0"
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets: []
+  storageClassName: ""
+  publicUrl: "http://onlyscans.local"
+  corsAllowOrigins: "http://onlyscans.local,http://localhost:3000"
+  repoAllowlist: "github.com/TBagirov/training"
+
+namespaces:
+  create: true
+  podSecurityStandards: true
+  app: secflow-app
+  workers: secflow-workers
+  sandbox: secflow-sandbox
+  system: secflow-system
+  observability: secflow-observability
+
+# Authentication & secrets (override in production or point to existingSecrets).
+auth:
+  mode: local # local | oidc
+  jwtSecret: "change-me-in-production-jwt-secret-min-32-chars"
+  serviceToken: "change-me-in-production-service-token"
+  secretKey: "change-me-in-production-secret-box-key"
+  leaseSecret: "change-me-in-production-lease-secret"
+  requireWorkerServiceToken: true
+  oidc:
+    issuerUrl: ""
+    jwksUrl: ""
+    audience: ""
+
+postgres:
+  image: postgres:17.12-alpine
+  database: secflow
+  user: secflow
+  password: "change-me-in-production-pg-password"
+  storageSize: 10Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+redis:
+  image: redis:8.10.3-alpine
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+garage:
+  image: dxflrs/garage:v2.5.0
+  adminToken: "change-me-in-production-garage-admin-token"
+  rpcSecret: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  region: garage
+  storageSize: 10Gi
+  secretName: secflow-garage-creds
+  initJob:
+    enabled: true
+    asHelmHook: false
+    imageRepository: garage-init
+    backoffLimit: 6
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Dynamic Worker Scaling & Task Splitting configuration.
+# mode:
+#   - orchestrator: Orchestrator creates & scales worker Deployments in secflow-workers directly via K8s API (works on k8s & k3s without KEDA).
+#   - keda:         Pre-creates worker Deployments and attaches KEDA ScaledObjects on orchestrator_queue_depth{plugin_id}.
+#   - static:       Pre-creates worker Deployments with fixed replicas.
+workerScaling:
+  mode: orchestrator
+  # When mode=orchestrator and precreatePureWorkers=false, worker-kotlin/worker-sca/sbom-service
+  # Deployments are created on demand by the orchestrator via K8s API upon the first task.
+  precreatePureWorkers: false
+  provisionTimeoutSeconds: 90
+  scaleWaitTimeoutSeconds: 15
+  reconcileIntervalSeconds: 10
+  idleTtlSeconds: 120
+  defaultMaxReplicas: 5
+  pools:
+    workerKotlin:
+      minReplicas: 0
+      maxReplicas: 5
+      tasksPerWorker: 1
+      cooldownSeconds: 120
+      cpuRequest: 250m
+      cpuLimit: 1500m
+      memoryRequest: 512Mi
+      memoryLimit: 1536Mi
+      emptyDirSizeLimit: 512Mi
+    workerSca:
+      minReplicas: 0
+      maxReplicas: 5
+      tasksPerWorker: 2
+      cooldownSeconds: 120
+      cpuRequest: 100m
+      cpuLimit: 500m
+      memoryRequest: 128Mi
+      memoryLimit: 512Mi
+      emptyDirSizeLimit: 256Mi
+    sbomService:
+      minReplicas: 0
+      maxReplicas: 5
+      tasksPerWorker: 2
+      cooldownSeconds: 120
+      cpuRequest: 100m
+      cpuLimit: 500m
+      memoryRequest: 128Mi
+      memoryLimit: 512Mi
+      emptyDirSizeLimit: 256Mi
+    aiService:
+      minReplicas: 1
+      maxReplicas: 4
+      tasksPerWorker: 2
+      cooldownSeconds: 180
+      cpuRequest: 100m
+      cpuLimit: 500m
+      memoryRequest: 128Mi
+      memoryLimit: 512Mi
+      emptyDirSizeLimit: 128Mi
+    notifyService:
+      minReplicas: 1
+      maxReplicas: 4
+      tasksPerWorker: 4
+      cooldownSeconds: 180
+      cpuRequest: 50m
+      cpuLimit: 250m
+      memoryRequest: 64Mi
+      memoryLimit: 256Mi
+      emptyDirSizeLimit: 64Mi
+    mcpBridge:
+      minReplicas: 1
+      maxReplicas: 4
+      tasksPerWorker: 4
+      cooldownSeconds: 180
+      cpuRequest: 50m
+      cpuLimit: 250m
+      memoryRequest: 64Mi
+      memoryLimit: 256Mi
+      emptyDirSizeLimit: 64Mi
+
+orchestrator:
+  replicas: 2
+  maxConcurrentTasks: 32
+  imageRepository: orchestrator
+  resources:
+    requests:
+      cpu: 150m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  hpa:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+edgeGateway:
+  replicas: 2
+  rateLimitPerMinute: 120
+  imageRepository: edge-gateway
+  service:
+    type: ClusterIP # ClusterIP | NodePort | LoadBalancer
+    nodePort: null  # e.g. 30808 when type=NodePort
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  hpa:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+sourceIngester:
+  replicas: 1
+  imageRepository: source-ingester
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+web:
+  replicas: 2
+  imageRepository: web
+  apiUrl: "" # Defaults to global.publicUrl when empty
+  service:
+    type: ClusterIP # ClusterIP | NodePort | LoadBalancer
+    nodePort: null  # e.g. 30300 when type=NodePort
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  hpa:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+
+pluginProvisioner:
+  enabled: true
+  replicas: 1
+  driver: k8s
+  imageRepository: plugin-provisioner
+  imageRegistryAllowlist: "ghcr.io/zwarder-s-orgranization/onlyscans,onlyscans,ghcr.io/secflow"
+  enableKeda: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+declarativeRuntimes:
+  enabled: true
+  internal:
+    replicas: 1
+    imageRepository: plugin-runtime-internal
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 300m
+        memory: 256Mi
+  action:
+    replicas: 1
+    imageRepository: plugin-runtime-action
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 300m
+        memory: 256Mi
+
+ai:
+  provider: template_fallback # template_fallback | openai_compatible | ollama
+  ollamaUrl: "http://ollama.secflow-system.svc.cluster.local:11434"
+  ollamaModel: ""
+  llmBaseUrl: ""
+  llmApiKey: ""
+  llmModel: ""
+  allowPrivateMcp: false
+
+ingress:
+  enabled: true
+  className: nginx # Set to "traefik" for k3s
+  host: onlyscans.local
+  annotations: {}
+  tls:
+    enabled: false
+    secretName: onlyscans-tls
+
+networkPolicies:
+  enabled: true
+
+keda:
+  prometheusAddress: "http://prometheus.secflow-observability.svc.cluster.local:9090"
+
+observability:
+  enabled: false
+  otelCollectorImage: otel/opentelemetry-collector-contrib:0.120.0
+  prometheusImage: prom/prometheus:v3.2.1
+  tempoImage: grafana/tempo:2.7.2
+  lokiImage: grafana/loki:3.4.2
+  promtailImage: grafana/promtail:3.4.2
+  grafanaImage: grafana/grafana:11.5.2
+  prometheus:
+    retention: 15d
+    storageSize: 5Gi
+  loki:
+    retention: 168h
+    storageSize: 5Gi
+  tempo:
+    retention: 168h
+    storageSize: 5Gi
+  grafana:
+    storageSize: 2Gi
+    adminUser: admin
+    adminPassword: "change-me-in-production-grafana-pass"
+    anonymousEnabled: true
+    anonymousRole: Viewer
+    service:
+      type: ClusterIP # ClusterIP | NodePort | LoadBalancer
+      nodePort: null  # e.g. 30301 when type=NodePort
+    ingress:
+      enabled: false
+      host: grafana.onlyscans.local
+
+ollama:
+  enabled: false
+  image: ollama/ollama:0.40.16
+  storageSize: 20Gi
+
+mailpit:
+  enabled: false
+  image: axllent/mailpit:v1.21

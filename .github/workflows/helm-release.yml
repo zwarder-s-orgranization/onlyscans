@@ -1,0 +1,180 @@
+name: Helm Chart Lint, Validate & OCI Release (Argo CD)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/charts/onlyscans/**"
+      - "deploy/k8s/**"
+      - "deploy/argocd/**"
+      - ".github/workflows/helm-release.yml"
+    tags:
+      - "v*"
+      - "chart-v*"
+  pull_request:
+    paths:
+      - "deploy/charts/onlyscans/**"
+      - "deploy/k8s/**"
+      - "deploy/argocd/**"
+      - ".github/workflows/helm-release.yml"
+  workflow_dispatch:
+    inputs:
+      chart_version:
+        description: "Optional explicit Helm chart semver (e.g. 0.1.42). Defaults to 0.1.<run_number>."
+        required: false
+        default: ""
+      app_version:
+        description: "Optional Helm appVersion / imageTag (e.g. 1.0.0). Defaults to tag or short SHA."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  lint-and-validate:
+    name: Lint Helm Chart & Validate Manifests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.17.2
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      - name: Validate Grafana dashboard JSON
+        run: |
+          python3 -m json.tool deploy/charts/onlyscans/files/dashboards/secflow-overview.json > /dev/null
+          python3 -m json.tool deploy/k8s/observability/dashboards/secflow-overview.json > /dev/null
+
+      - name: Helm lint across all presets
+        run: |
+          helm lint deploy/charts/onlyscans
+          helm lint deploy/charts/onlyscans -f deploy/charts/onlyscans/values-k3s.yaml --set observability.enabled=true --set web.service.type=NodePort --set web.service.nodePort=30300 --set edgeGateway.service.type=NodePort --set edgeGateway.service.nodePort=30808 --set observability.grafana.service.type=NodePort --set observability.grafana.service.nodePort=30301
+          helm lint deploy/charts/onlyscans -f deploy/charts/onlyscans/values-local-k8s.yaml
+          helm lint deploy/charts/onlyscans -f deploy/charts/onlyscans/values-prod.yaml
+          helm lint deploy/charts/onlyscans -f deploy/charts/onlyscans/values-prod.yaml --set workerScaling.mode=keda
+
+      - name: Render Helm templates and validate with kubeconform
+        run: |
+          for preset in values.yaml values-k3s.yaml values-local-k8s.yaml values-prod.yaml; do
+            echo "==> Validating Helm render with ${preset} (observability.enabled=true)"
+            helm template onlyscans deploy/charts/onlyscans \
+              -f "deploy/charts/onlyscans/${preset}" \
+              --set observability.enabled=true \
+              | kubeconform -strict -ignore-missing-schemas -summary
+          done
+
+      - name: Validate Kustomize overlays (k3s, k8s, observability)
+        run: |
+          for dir in deploy/k8s/overlays/k3s deploy/k8s/overlays/k8s deploy/k8s/observability; do
+            echo "==> Validating Kustomize ${dir}"
+            kubectl kustomize "${dir}" | kubeconform -strict -ignore-missing-schemas -summary
+          done
+
+      - name: Validate Argo CD manifests YAML syntax
+        run: |
+          python3 -c "
+          import glob, yaml
+          for path in sorted(glob.glob('deploy/argocd/*.yaml')):
+              list(yaml.safe_load_all(open(path, encoding='utf-8')))
+              print('OK:', path)
+          "
+
+  publish-helm-chart:
+    name: Package & Push OCI Helm Chart to GHCR
+    needs: lint-and-validate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      chart_version: ${{ steps.meta.outputs.chart_version }}
+      chart_oci_ref: ${{ steps.meta.outputs.chart_oci_ref }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.17.2
+
+      - name: Compute chart version and OCI target
+        id: meta
+        env:
+          INPUT_CHART_VERSION: ${{ inputs.chart_version }}
+          INPUT_APP_VERSION: ${{ inputs.app_version }}
+        run: |
+          OWNER_LOWER="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          CHART_VERSION="${INPUT_CHART_VERSION}"
+          APP_VERSION="${INPUT_APP_VERSION}"
+
+          if [[ -z "${CHART_VERSION}" ]]; then
+            if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+              TAG_CLEAN="${GITHUB_REF_NAME#chart-}"
+              CHART_VERSION="${TAG_CLEAN#v}"
+            else
+              BASE_MINOR="$(awk '/^version:/ {print $2}' deploy/charts/onlyscans/Chart.yaml | cut -d. -f1-2)"
+              CHART_VERSION="${BASE_MINOR}.${GITHUB_RUN_NUMBER}"
+            fi
+          fi
+
+          if [[ -z "${APP_VERSION}" ]]; then
+            if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+              APP_VERSION="${GITHUB_REF_NAME#v}"
+            else
+              APP_VERSION="sha-${GITHUB_SHA::7}"
+            fi
+          fi
+
+          echo "owner_lower=${OWNER_LOWER}" >> "$GITHUB_OUTPUT"
+          echo "chart_version=${CHART_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "app_version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "chart_oci_ref=oci://ghcr.io/${OWNER_LOWER}/charts/onlyscans:${CHART_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Packaging onlyscans chart version=${CHART_VERSION} appVersion=${APP_VERSION}"
+
+      - name: Package Helm chart
+        run: |
+          mkdir -p dist
+          helm package deploy/charts/onlyscans \
+            --destination dist \
+            --version "${{ steps.meta.outputs.chart_version }}" \
+            --app-version "${{ steps.meta.outputs.app_version }}"
+          ls -lh dist/
+
+      - name: Log in to GitHub Container Registry (OCI Helm)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "${GITHUB_TOKEN}" | helm registry login ghcr.io \
+            --username "${GITHUB_ACTOR}" \
+            --password-stdin
+
+      - name: Push Helm chart to GHCR OCI registry
+        run: |
+          helm push dist/onlyscans-*.tgz "oci://ghcr.io/${{ steps.meta.outputs.owner_lower }}/charts"
+
+      - name: Upload packaged chart artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: onlyscans-helm-chart-${{ steps.meta.outputs.chart_version }}
+          path: dist/onlyscans-*.tgz
+          retention-days: 30
+
+      - name: Write job summary for Argo CD
+        run: |
+          {
+            echo "### OnlyScans Helm Chart Published"
+            echo "- **OCI Chart**: \`${{ steps.meta.outputs.chart_oci_ref }}\`"
+            echo "- **Chart Version**: \`${{ steps.meta.outputs.chart_version }}\`"
+            echo "- **App Version**: \`${{ steps.meta.outputs.app_version }}\`"
+            echo "- **Argo CD Source**: \`ghcr.io/${{ steps.meta.outputs.owner_lower }}/charts\` (\`chart: onlyscans\`, \`targetRevision: 0.1.*\`)"
+          } >> "$GITHUB_STEP_SUMMARY"

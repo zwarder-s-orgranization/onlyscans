@@ -95,6 +95,18 @@ func ResolveMCPDiscoverySecret(ctx context.Context, addr, serviceToken, connecti
 	return resolve(ctx, addr, resolveReq)
 }
 
+// AIProviderScopeID is the sentinel scope ID allowing trusted services (ai-service, edge-gateway)
+// to resolve LLM_API_KEY / GENERIC secrets configured for the workspace AI provider.
+const AIProviderScopeID = "__ai_provider__"
+
+// ResolveAIProviderSecret fetches an LLM API key secret for the global AI provider or model discovery.
+func ResolveAIProviderSecret(ctx context.Context, addr, serviceToken, secretRef string) (string, error) {
+	if secretRef == "" {
+		return "", nil
+	}
+	return ResolveMCPDiscoverySecret(ctx, addr, serviceToken, AIProviderScopeID, secretRef)
+}
+
 func resolve(ctx context.Context, addr string, req *secflowv1.ResolveScopedSecretRequest) (string, error) {
 	conn, err := getConn(addr)
 	if err != nil {

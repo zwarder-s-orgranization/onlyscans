@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - 00-namespace.yaml
+  - 10-prometheus.yaml
+  - 20-loki-promtail.yaml
+  - 30-otel-tempo.yaml
+  - 40-grafana.yaml
+
+configMapGenerator:
+  - name: grafana-dashboard-secflow
+    namespace: secflow-observability
+    options:
+      disableNameSuffixHash: true
+    files:
+      - secflow-overview.json=dashboards/secflow-overview.json

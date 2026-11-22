@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   Background,
   BackgroundVariant,
-  Controls,
   Handle,
   Position,
   ReactFlow,
@@ -23,8 +22,6 @@ import {
   Copy,
   Layers,
   Lock,
-  Maximize2,
-  Pencil,
   Plus,
   Search,
   ShieldCheck,
@@ -32,8 +29,10 @@ import {
   X,
 } from "lucide-react";
 import {
+  autoLayoutBoard,
   buildGraphFromTemplate,
   CATEGORY_BY_ID,
+  type CanvasBoardNode,
   type CanvasBoardNodeData,
 } from "@/data/canvas-nodes-catalog";
 import type {
@@ -141,7 +140,7 @@ function TemplatePreviewNode({ data, selected }: NodeProps<TemplatePreviewFlowNo
       )}
 
       <div
-        className={`relative z-10 w-full rounded-[16px] bg-[#ffffff] text-[#000000] transition-colors duration-150 ${
+        className={`relative z-10 flex w-full flex-col rounded-[16px] bg-[#ffffff] text-[#000000] transition-colors duration-150 ${
           selected
             ? "border-[2px] border-[#0080ff] shadow-[0_2px_12px_rgba(0,128,255,0.14)]"
             : "border border-[#8c9baa] hover:border-[#000000]"
@@ -174,7 +173,7 @@ function TemplatePreviewNode({ data, selected }: NodeProps<TemplatePreviewFlowNo
         </div>
 
         <div
-          className={`px-3 py-2.5 ${
+          className={`flex flex-1 flex-col justify-between px-3 py-2.5 ${
             outputs.length >= 4
               ? "min-h-[126px] pr-[96px]"
               : isTripleOutput
@@ -220,10 +219,11 @@ function TemplatePreviewNode({ data, selected }: NodeProps<TemplatePreviewFlowNo
 
         {isMultiOutput ? (
           outputs.map((port, idx) => {
-            const topPercent =
-              outputs.length === 1
-                ? 56
-                : Math.round(26 + (idx * 54) / (outputs.length - 1));
+            const startPercent = outputs.length >= 4 ? 37 : outputs.length === 2 ? 44 : 41;
+            const endPercent = outputs.length >= 4 ? 88 : outputs.length === 2 ? 78 : 85;
+            const topPercent = Math.round(
+              startPercent + (idx * (endPercent - startPercent)) / Math.max(1, outputs.length - 1),
+            );
             return (
               <div key={port}>
                 <span
@@ -262,6 +262,19 @@ const TEMPLATE_NODE_TYPES = {
   templatePreviewNode: TemplatePreviewNode,
 };
 
+function hasCrampedTemplateNodes(nodes: CanvasBoardNode[]): boolean {
+  for (let i = 0; i < nodes.length; i += 1) {
+    for (let j = i + 1; j < nodes.length; j += 1) {
+      const dx = Math.abs(nodes[i].position.x - nodes[j].position.x);
+      const dy = Math.abs(nodes[i].position.y - nodes[j].position.y);
+      if (dx < 276 && dy < 144) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function TemplateCanvasPreviewInner({
   template,
   canEdit,
@@ -275,13 +288,8 @@ function TemplateCanvasPreviewInner({
 }) {
   const { fitView } = useReactFlow();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [cloneMenuOpen, setCloneMenuOpen] = useState(false);
-  const [cloneName, setCloneName] = useState(template.name);
-  const [openAfterClone, setOpenAfterClone] = useState(true);
-  const [detailsExpanded, setDetailsExpanded] = useState(true);
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [copiedSlug, setCopiedSlug] = useState(false);
-
-  const clonePopoverRef = useRef<HTMLDivElement>(null);
 
   const requiredNodePlugins = useMemo(
     () => new Set(template.requiredParams.map((p) => p.node)),
@@ -293,7 +301,10 @@ function TemplateCanvasPreviewInner({
       template.boardGraph && template.boardGraph.nodes.length > 0
         ? template.boardGraph
         : buildGraphFromTemplate(template, template.id, { sanitized: true });
-    const flowNodes: TemplatePreviewFlowNode[] = built.nodes.map((node) => ({
+    const spacedNodes = hasCrampedTemplateNodes(built.nodes)
+      ? autoLayoutBoard(built.nodes, built.edges)
+      : built.nodes;
+    const flowNodes: TemplatePreviewFlowNode[] = spacedNodes.map((node) => ({
       id: node.id,
       type: "templatePreviewNode",
       position: node.position,
@@ -331,34 +342,11 @@ function TemplateCanvasPreviewInner({
 
   useEffect(() => {
     setSelectedNodeId(null);
-    setCloneMenuOpen(false);
-    setCloneName(template.name);
     const raf = window.requestAnimationFrame(() => {
       void fitView({ padding: 0.22, maxZoom: 1.02, duration: 200 });
     });
     return () => window.cancelAnimationFrame(raf);
-  }, [template.id, template.name, fitView]);
-
-  useEffect(() => {
-    if (!cloneMenuOpen) return;
-    const onMouseDown = (event: MouseEvent) => {
-      if (
-        clonePopoverRef.current &&
-        !clonePopoverRef.current.contains(event.target as globalThis.Node)
-      ) {
-        setCloneMenuOpen(false);
-      }
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setCloneMenuOpen(false);
-    };
-    window.addEventListener("mousedown", onMouseDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("mousedown", onMouseDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [cloneMenuOpen]);
+  }, [template.id, fitView]);
 
   const selectedNode = useMemo(
     () => nodes.find((n) => n.id === selectedNodeId) ?? null,
@@ -379,17 +367,10 @@ function TemplateCanvasPreviewInner({
     window.setTimeout(() => setCopiedSlug(false), 1500);
   };
 
-  const handleCloneSubmit = (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!canEdit) return;
-    onClone(template, openAfterClone, cloneName.trim() || template.name);
-    setCloneMenuOpen(false);
-  };
-
   return (
     <div className="relative flex min-h-0 flex-1 flex-col bg-[#ffffff]">
       {/* Context Action Strip */}
-      <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-[#8c9baa]/40 bg-[#ffffff] px-4 py-2.5 xl:flex-nowrap">
+      <div className="flex min-h-[61px] flex-wrap items-center justify-between gap-2.5 border-b border-[#8c9baa]/40 bg-[#ffffff] px-4 py-2.5 xl:flex-nowrap">
         <div className="flex min-w-0 flex-1 items-center gap-2.5">
           <h2
             title={template.name}
@@ -405,113 +386,14 @@ function TemplateCanvasPreviewInner({
 
         <div className="flex shrink-0 items-center gap-2">
           {canEdit ? (
-            <>
-              <div ref={clonePopoverRef} className="relative">
-                <button
-                  type="button"
-                  onClick={() => setCloneMenuOpen((v) => !v)}
-                  aria-expanded={cloneMenuOpen}
-                  aria-haspopup="dialog"
-                  aria-label="Клонировать с произвольным именем"
-                  className="fm-btn-outline fm-focus inline-flex min-h-[44px] cursor-pointer items-center gap-1.5 px-3.5 text-[12.5px] font-medium text-[#222222] sm:min-h-[38px]"
-                >
-                  <Pencil className="h-3.5 w-3.5 stroke-[1.7]" aria-hidden="true" />
-                  <span className="hidden sm:inline">С именем…</span>
-                </button>
-
-                {cloneMenuOpen && (
-                  <div
-                    role="dialog"
-                    aria-label="Параметры клонирования шаблона"
-                    className="fm-float absolute right-0 top-[calc(100%+8px)] z-40 w-[min(340px,calc(100vw-2rem))] origin-top-right rounded-[20px] border border-[#8c9baa] bg-[#ffffff] p-4"
-                  >
-                    <form onSubmit={handleCloneSubmit} className="space-y-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-[13px] font-semibold text-[#000000]">
-                          Клонировать шаблон
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setCloneMenuOpen(false)}
-                          aria-label="Закрыть форму клонирования"
-                          className="fm-focus inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border border-[#8c9baa]/60 text-[#636f7b] hover:border-[#000000] hover:text-[#000000]"
-                        >
-                          <X className="h-3.5 w-3.5 stroke-[1.8]" aria-hidden="true" />
-                        </button>
-                      </div>
-
-                      <div>
-                        <label
-                          htmlFor="fm-clone-tpl-name"
-                          className="block text-[12px] font-semibold text-[#222222]"
-                        >
-                          Название новой доски
-                        </label>
-                        <input
-                          id="fm-clone-tpl-name"
-                          type="text"
-                          maxLength={120}
-                          enterKeyHint="done"
-                          value={cloneName}
-                          onChange={(e) => setCloneName(e.target.value)}
-                          placeholder={template.name}
-                          className="fm-focus mt-1.5 min-h-[42px] w-full rounded-[12px] border border-[#8c9baa] bg-[#ffffff] px-3 text-[16px] text-[#000000] placeholder:text-[#636f7b] sm:text-[13.5px]"
-                        />
-                      </div>
-
-                      <label className="flex cursor-pointer items-center gap-2.5 text-[12.5px] font-medium text-[#222222]">
-                        <input
-                          type="checkbox"
-                          checked={openAfterClone}
-                          onChange={(e) => setOpenAfterClone(e.target.checked)}
-                          className="h-4 w-4 rounded border-[#8c9baa] accent-[#0066e6]"
-                        />
-                        <span>Сразу открыть на канвасе</span>
-                      </label>
-
-                      {template.requiredParams.length > 0 && (
-                        <p className="rounded-[12px] bg-[#f6faff] px-3 py-2 text-[12px] leading-[1.45] text-[#636f7b]">
-                          После клонирования заполните {template.requiredParams.length}{" "}
-                          {pluralRu(
-                            template.requiredParams.length,
-                            "параметр",
-                            "параметра",
-                            "параметров",
-                          )}{" "}
-                          (источник и секреты каналов доставки).
-                        </p>
-                      )}
-
-                      <div className="flex items-center justify-end gap-2 pt-1">
-                        <button
-                          type="button"
-                          onClick={() => setCloneMenuOpen(false)}
-                          className="fm-btn-outline fm-focus min-h-[38px] cursor-pointer px-3.5 text-[12.5px] font-medium"
-                        >
-                          Отмена
-                        </button>
-                        <button
-                          type="submit"
-                          className="fm-btn-signal fm-focus inline-flex min-h-[38px] cursor-pointer items-center gap-1.5 px-4 text-[12.5px] font-semibold"
-                        >
-                          <span>Создать доску</span>
-                          <ArrowUpRight className="h-3.5 w-3.5 stroke-[2]" aria-hidden="true" />
-                        </button>
-                      </div>
-                    </form>
-                  </div>
-                )}
-              </div>
-
-              <button
-                type="button"
-                onClick={() => onClone(template, true)}
-                className="fm-btn-signal fm-focus inline-flex min-h-[44px] cursor-pointer items-center gap-1.5 px-4 text-[13px] font-semibold sm:min-h-[38px] sm:text-[12.5px]"
-              >
-                <span>Использовать</span>
-                <ArrowUpRight className="h-3.5 w-3.5 stroke-[2]" aria-hidden="true" />
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={() => onClone(template, true)}
+              className="fm-btn-signal fm-focus inline-flex min-h-[44px] cursor-pointer items-center gap-1.5 px-4 text-[13px] font-semibold sm:min-h-[38px] sm:text-[12.5px]"
+            >
+              <span>Использовать</span>
+              <ArrowUpRight className="h-3.5 w-3.5 stroke-[2]" aria-hidden="true" />
+            </button>
           ) : (
             <span className="inline-flex min-h-[34px] items-center gap-1.5 rounded-full border border-[#8c9baa]/60 px-3 text-[12px] font-medium text-[#636f7b]">
               <Lock className="h-3.5 w-3.5 stroke-[1.7]" aria-hidden="true" />
@@ -536,29 +418,8 @@ function TemplateCanvasPreviewInner({
           fitViewOptions={{ padding: 0.22, maxZoom: 1.02 }}
           proOptions={{ hideAttribution: true }}
         >
-          <Background variant={BackgroundVariant.Cross} gap={24} size={2} color="#c5e0fb" />
-          <Controls showInteractive={false} position="bottom-left" />
+          <Background variant={BackgroundVariant.Dots} gap={32} size={1.5} color="#e3ebf3" />
         </ReactFlow>
-
-        {/* Top-left floating Fit View + Graph Summary */}
-        <div className="pointer-events-none absolute left-3 top-3 z-10 flex flex-wrap items-center gap-2">
-          <div className="fm-float pointer-events-auto inline-flex items-center gap-1 rounded-full border border-[#8c9baa]/60 px-2 py-1">
-            <button
-              type="button"
-              onClick={() => void fitView({ padding: 0.22, maxZoom: 1.02, duration: 200 })}
-              title="Вписать граф в экран"
-              className="fm-focus inline-flex min-h-[28px] cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium text-[#222222] transition-colors hover:bg-[#c5e0fb]/35 hover:text-[#0050ff] active:scale-[0.98]"
-            >
-              <Maximize2 className="h-3.5 w-3.5 stroke-[1.7]" aria-hidden="true" />
-              <span>По размеру</span>
-            </button>
-          </div>
-          <span className="fm-tnum fm-float hidden rounded-full border border-[#8c9baa]/55 px-3 py-1.5 text-[12px] font-medium text-[#636f7b] lg:inline-flex">
-            {nodes.length} {pluralRu(nodes.length, "нода", "ноды", "нод")} · {edges.length}{" "}
-            {pluralRu(edges.length, "связь", "связи", "связей")} · {formatCount(template.cloneCount)}{" "}
-            {pluralRu(template.cloneCount, "клонирование", "клонирования", "клонирований")}
-          </span>
-        </div>
 
         {/* Floating Node Sanitized Inspector */}
         {selectedNode && selectedCategory && (
@@ -953,10 +814,10 @@ export function FlowmappTemplatesView({
         aria-label="Каталог шаблонов Workflow"
         className={`${
           mobileView === "detail" ? "hidden md:flex" : "flex"
-        } min-h-0 w-full flex-1 flex-col border-[#8c9baa]/50 bg-[#ffffff] md:w-[356px] md:flex-none md:border-r lg:w-[392px]`}
+        } min-h-0 w-full flex-1 flex-col border-[#8c9baa]/50 bg-[#ffffff] md:w-[272px] md:flex-none md:border-r lg:w-[296px]`}
       >
         {/* Rail Header */}
-        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[#8c9baa]/45 px-3.5 py-3">
+        <div className="flex min-h-[61px] shrink-0 items-center justify-between gap-2 border-b border-[#8c9baa]/45 px-3.5 py-3">
           <div className="flex min-w-0 items-center gap-2">
             <h1 className="text-[18px] font-bold leading-none tracking-[-0.03em] text-[#000000]">
               Шаблоны

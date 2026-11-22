@@ -399,4 +399,7 @@ func (s *Server) loadState(ctx context.Context) {
 	s.loadMCPs(ctx)
 	s.loadRuns(ctx)
 	s.loadTokens(ctx)
+	s.loadPluginInstallations(ctx)
+	s.loadPlugins(ctx)
+	s.loadSavedNodes(ctx)
 }

@@ -68,7 +68,7 @@ func (s *Server) CreateWorkflow(ctx context.Context, req *secflowv1.CreateWorkfl
 		CreatedAt:        now,
 		UpdatedAt:        now,
 		WebhookPath:      "/webhooks/git/" + wfID,
-		ValidationIssues: issuesToProto(engine.Validate(toEngine(graphCopy))),
+		ValidationIssues: s.validateGraph(ctx, req.GetActor(), graphCopy),
 	}
 	applyTriggerMetadata(wf)
 	s.wfMu.Lock()
@@ -91,6 +91,17 @@ func (s *Server) UpdateWorkflow(ctx context.Context, req *secflowv1.UpdateWorkfl
 	s.secMu.Unlock()
 
 	graphCopy := cloneWorkflowGraph(req.GetGraph())
+	s.wfMu.RLock()
+	existing, exists := s.workflows[req.GetWorkflowId()]
+	if !exists {
+		s.wfMu.RUnlock()
+		return nil, status.Error(codes.NotFound, "workflow not found")
+	}
+	preserveExistingSecretBindings(existing.GetGraph(), graphCopy, validSecrets)
+	s.wfMu.RUnlock()
+
+	issues := s.validateGraph(ctx, req.GetActor(), graphCopy)
+
 	s.wfMu.Lock()
 	wf, ok := s.workflows[req.GetWorkflowId()]
 	if !ok {
@@ -107,7 +118,7 @@ func (s *Server) UpdateWorkflow(ctx context.Context, req *secflowv1.UpdateWorkfl
 	wf.Graph = graphCopy
 	wf.Version++
 	wf.UpdatedAt = timestamppb.Now()
-	wf.ValidationIssues = issuesToProto(engine.Validate(toEngine(graphCopy)))
+	wf.ValidationIssues = issues
 	applyTriggerMetadata(wf)
 	snap := cloneWorkflow(wf)
 	s.wfMu.Unlock()
@@ -176,16 +187,12 @@ func (s *Server) ValidateWorkflow(ctx context.Context, req *secflowv1.ValidateWo
 }
 
 func (s *Server) validateGraph(ctx context.Context, actor *secflowv1.ActorContext, g *secflowv1.WorkflowGraph) []*secflowv1.ValidationIssue {
+	plugins, disabled := s.pluginRegistrySnapshot()
 	var out []*secflowv1.ValidationIssue
-	seenSecretIssue := map[string]bool{}
-	for _, issue := range engine.Validate(toEngine(g)) {
+	for _, issue := range engine.ValidateWithPlugins(toEngine(g), pluginLookupFromSnapshot(plugins, disabled)) {
 		sev := secflowv1.ValidationSeverity_VALIDATION_SEVERITY_ERROR
 		if issue.Severity == "WARNING" {
 			sev = secflowv1.ValidationSeverity_VALIDATION_SEVERITY_WARNING
-		}
-		fp := inferEngineFieldPath(issue)
-		if issue.Code == engine.CodeMissingSecret && fp != "" {
-			seenSecretIssue[issue.NodeID+":"+fp] = true
 		}
 		out = append(out, &secflowv1.ValidationIssue{
 			Code:      issue.Code,
@@ -193,56 +200,19 @@ func (s *Server) validateGraph(ctx context.Context, actor *secflowv1.ActorContex
 			Message:   issue.Message,
 			NodeId:    issue.NodeID,
 			EdgeId:    issue.EdgeID,
-			FieldPath: fp,
+			FieldPath: inferEngineFieldPath(issue),
 		})
 	}
 	if g == nil {
 		return out
 	}
-
-	s.plugMu.Lock()
-	plugins := make(map[string]*secflowv1.PluginManifest, len(s.plugins))
-	for pid, m := range s.plugins {
-		plugins[pid] = m
-	}
-	s.plugMu.Unlock()
+	out = append(out, s.checkDraftDeclarativeNodes(g)...)
 
 	for _, n := range g.GetNodes() {
 		pid := n.GetPluginId()
 		manifest, known := plugins[pid]
 		if !known {
-			out = append(out, &secflowv1.ValidationIssue{
-				Code:      "UNKNOWN_PLUGIN",
-				Severity:  secflowv1.ValidationSeverity_VALIDATION_SEVERITY_ERROR,
-				NodeId:    n.GetId(),
-				FieldPath: "pluginId",
-				Message:   fmt.Sprintf("плагин %q не зарегистрирован в реестре", pid),
-			})
 			continue
-		}
-
-		// Verify any required secret keys declared by the registered plugin manifest.
-		if manifest != nil && len(manifest.GetRequiredSecretKeys()) > 0 {
-			bound := map[string]bool{}
-			for _, b := range n.GetSecretBindings() {
-				if strings.TrimSpace(b.GetSecretRef()) != "" {
-					bound[b.GetParamKey()] = true
-				}
-			}
-			for _, key := range manifest.GetRequiredSecretKeys() {
-				fp := "secretBindings." + key
-				if bound[key] || seenSecretIssue[n.GetId()+":"+fp] {
-					continue
-				}
-				seenSecretIssue[n.GetId()+":"+fp] = true
-				out = append(out, &secflowv1.ValidationIssue{
-					Code:      engine.CodeMissingSecret,
-					Severity:  secflowv1.ValidationSeverity_VALIDATION_SEVERITY_ERROR,
-					NodeId:    n.GetId(),
-					FieldPath: fp,
-					Message:   "нет секрета " + key + " (привяжите secretRef в secretBindings)",
-				})
-			}
 		}
 
 		params := map[string]any{}
@@ -258,14 +228,20 @@ func (s *Server) validateGraph(ctx context.Context, actor *secflowv1.ActorContex
 				continue
 			}
 		}
-		if err := paramschema.Check(pid, params); err != nil {
-			code, fp := classifyParamSchemaError(pid, err)
+		var schemaErr error
+		if _, isBuiltinDef := paramschema.RawDef(pid); isBuiltinDef {
+			schemaErr = paramschema.Check(pid, params)
+		} else if manifest != nil && len(manifest.GetParamsJsonSchema()) > 0 {
+			schemaErr = paramschema.CheckSchema(pid, manifest.GetParamsJsonSchema(), params)
+		}
+		if schemaErr != nil {
+			code, fp := classifyParamSchemaError(pid, schemaErr)
 			out = append(out, &secflowv1.ValidationIssue{
 				Code:      code,
 				Severity:  secflowv1.ValidationSeverity_VALIDATION_SEVERITY_ERROR,
 				NodeId:    n.GetId(),
 				FieldPath: fp,
-				Message:   err.Error(),
+				Message:   schemaErr.Error(),
 			})
 		}
 		if pid == "source.git" {
@@ -319,6 +295,8 @@ func inferEngineFieldPath(issue engine.Issue) string {
 	switch issue.Code {
 	case engine.CodeBadPort:
 		return "sourceHandle"
+	case engine.CodePluginDisabled, engine.CodePluginUnregistered:
+		return "pluginId"
 	case engine.CodeMissingSecret:
 		if rest, ok := strings.CutPrefix(issue.Message, "нет секрета "); ok {
 			key, _, _ := strings.Cut(rest, " ")

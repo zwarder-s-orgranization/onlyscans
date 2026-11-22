@@ -1,0 +1,383 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orchestrator
+  namespace: {{ .Values.namespaces.app }}
+  labels:
+    app: orchestrator
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+automountServiceAccountToken: {{ eq .Values.workerScaling.mode "orchestrator" }}
+{{- if eq .Values.workerScaling.mode "orchestrator" }}
+---
+# Minimal namespace-scoped Role strictly limited to secflow-workers.
+# Orchestrator creates and scales built-in worker Deployments on demand and never receives
+# cluster-wide permissions or Secret read/write privileges.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secflow-orchestrator-worker-scaler
+  namespace: {{ .Values.namespaces.workers }}
+  labels:
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secflow-orchestrator-worker-scaler
+  namespace: {{ .Values.namespaces.workers }}
+  labels:
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: orchestrator
+    namespace: {{ .Values.namespaces.app }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secflow-orchestrator-worker-scaler
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: secflow-worker-pools
+  namespace: {{ .Values.namespaces.app }}
+  labels:
+    app: orchestrator
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+data:
+  worker-pools.json: |
+    [
+      {
+        "name": "worker-kotlin",
+        "pluginIds": ["scan.sast.kotlin", "scan.secrets"],
+        "image": "{{ include "secflow.image" (dict "root" . "repo" "worker-kotlin") }}",
+        "imagePullPolicy": "{{ .Values.global.imagePullPolicy }}",
+        "minReplicas": {{ .Values.workerScaling.pools.workerKotlin.minReplicas }},
+        "maxReplicas": {{ .Values.workerScaling.pools.workerKotlin.maxReplicas }},
+        "tasksPerWorker": {{ .Values.workerScaling.pools.workerKotlin.tasksPerWorker }},
+        "cooldownSeconds": {{ .Values.workerScaling.pools.workerKotlin.cooldownSeconds }},
+        "cpuRequest": "{{ .Values.workerScaling.pools.workerKotlin.cpuRequest }}",
+        "cpuLimit": "{{ .Values.workerScaling.pools.workerKotlin.cpuLimit }}",
+        "memoryRequest": "{{ .Values.workerScaling.pools.workerKotlin.memoryRequest }}",
+        "memoryLimit": "{{ .Values.workerScaling.pools.workerKotlin.memoryLimit }}",
+        "emptyDirSizeLimit": "{{ .Values.workerScaling.pools.workerKotlin.emptyDirSizeLimit }}",
+        "egressTier": "internal-only",
+        "needsGarage": true
+      },
+      {
+        "name": "worker-sca",
+        "pluginIds": ["scan.sca"],
+        "image": "{{ include "secflow.image" (dict "root" . "repo" "worker-sca") }}",
+        "imagePullPolicy": "{{ .Values.global.imagePullPolicy }}",
+        "minReplicas": {{ .Values.workerScaling.pools.workerSca.minReplicas }},
+        "maxReplicas": {{ .Values.workerScaling.pools.workerSca.maxReplicas }},
+        "tasksPerWorker": {{ .Values.workerScaling.pools.workerSca.tasksPerWorker }},
+        "cooldownSeconds": {{ .Values.workerScaling.pools.workerSca.cooldownSeconds }},
+        "cpuRequest": "{{ .Values.workerScaling.pools.workerSca.cpuRequest }}",
+        "cpuLimit": "{{ .Values.workerScaling.pools.workerSca.cpuLimit }}",
+        "memoryRequest": "{{ .Values.workerScaling.pools.workerSca.memoryRequest }}",
+        "memoryLimit": "{{ .Values.workerScaling.pools.workerSca.memoryLimit }}",
+        "emptyDirSizeLimit": "{{ .Values.workerScaling.pools.workerSca.emptyDirSizeLimit }}",
+        "egressTier": "internal-only",
+        "needsGarage": true
+      },
+      {
+        "name": "sbom-service",
+        "pluginIds": ["sbom.generate"],
+        "image": "{{ include "secflow.image" (dict "root" . "repo" "sbom-service") }}",
+        "imagePullPolicy": "{{ .Values.global.imagePullPolicy }}",
+        "minReplicas": {{ .Values.workerScaling.pools.sbomService.minReplicas }},
+        "maxReplicas": {{ .Values.workerScaling.pools.sbomService.maxReplicas }},
+        "tasksPerWorker": {{ .Values.workerScaling.pools.sbomService.tasksPerWorker }},
+        "cooldownSeconds": {{ .Values.workerScaling.pools.sbomService.cooldownSeconds }},
+        "cpuRequest": "{{ .Values.workerScaling.pools.sbomService.cpuRequest }}",
+        "cpuLimit": "{{ .Values.workerScaling.pools.sbomService.cpuLimit }}",
+        "memoryRequest": "{{ .Values.workerScaling.pools.sbomService.memoryRequest }}",
+        "memoryLimit": "{{ .Values.workerScaling.pools.sbomService.memoryLimit }}",
+        "emptyDirSizeLimit": "{{ .Values.workerScaling.pools.sbomService.emptyDirSizeLimit }}",
+        "egressTier": "internal-only",
+        "needsGarage": true
+      },
+      {
+        "name": "ai-service",
+        "pluginIds": ["ai.explain"],
+        "image": "{{ include "secflow.image" (dict "root" . "repo" "ai-service") }}",
+        "imagePullPolicy": "{{ .Values.global.imagePullPolicy }}",
+        "minReplicas": {{ .Values.workerScaling.pools.aiService.minReplicas }},
+        "maxReplicas": {{ .Values.workerScaling.pools.aiService.maxReplicas }},
+        "tasksPerWorker": {{ .Values.workerScaling.pools.aiService.tasksPerWorker }},
+        "cooldownSeconds": {{ .Values.workerScaling.pools.aiService.cooldownSeconds }},
+        "cpuRequest": "{{ .Values.workerScaling.pools.aiService.cpuRequest }}",
+        "cpuLimit": "{{ .Values.workerScaling.pools.aiService.cpuLimit }}",
+        "memoryRequest": "{{ .Values.workerScaling.pools.aiService.memoryRequest }}",
+        "memoryLimit": "{{ .Values.workerScaling.pools.aiService.memoryLimit }}",
+        "emptyDirSizeLimit": "{{ .Values.workerScaling.pools.aiService.emptyDirSizeLimit }}",
+        "egressTier": "egress-external",
+        "needsGarage": true,
+        "needsDatabase": true,
+        "needsRedis": true
+      },
+      {
+        "name": "notify-service",
+        "pluginIds": ["notify.telegram", "notify.webhook", "notify.smtp"],
+        "image": "{{ include "secflow.image" (dict "root" . "repo" "notify-service") }}",
+        "imagePullPolicy": "{{ .Values.global.imagePullPolicy }}",
+        "minReplicas": {{ .Values.workerScaling.pools.notifyService.minReplicas }},
+        "maxReplicas": {{ .Values.workerScaling.pools.notifyService.maxReplicas }},
+        "tasksPerWorker": {{ .Values.workerScaling.pools.notifyService.tasksPerWorker }},
+        "cooldownSeconds": {{ .Values.workerScaling.pools.notifyService.cooldownSeconds }},
+        "cpuRequest": "{{ .Values.workerScaling.pools.notifyService.cpuRequest }}",
+        "cpuLimit": "{{ .Values.workerScaling.pools.notifyService.cpuLimit }}",
+        "memoryRequest": "{{ .Values.workerScaling.pools.notifyService.memoryRequest }}",
+        "memoryLimit": "{{ .Values.workerScaling.pools.notifyService.memoryLimit }}",
+        "emptyDirSizeLimit": "{{ .Values.workerScaling.pools.notifyService.emptyDirSizeLimit }}",
+        "egressTier": "egress-external"
+      },
+      {
+        "name": "mcp-bridge",
+        "pluginIds": ["mcp.tool"],
+        "image": "{{ include "secflow.image" (dict "root" . "repo" "mcp-bridge") }}",
+        "imagePullPolicy": "{{ .Values.global.imagePullPolicy }}",
+        "minReplicas": {{ .Values.workerScaling.pools.mcpBridge.minReplicas }},
+        "maxReplicas": {{ .Values.workerScaling.pools.mcpBridge.maxReplicas }},
+        "tasksPerWorker": {{ .Values.workerScaling.pools.mcpBridge.tasksPerWorker }},
+        "cooldownSeconds": {{ .Values.workerScaling.pools.mcpBridge.cooldownSeconds }},
+        "cpuRequest": "{{ .Values.workerScaling.pools.mcpBridge.cpuRequest }}",
+        "cpuLimit": "{{ .Values.workerScaling.pools.mcpBridge.cpuLimit }}",
+        "memoryRequest": "{{ .Values.workerScaling.pools.mcpBridge.memoryRequest }}",
+        "memoryLimit": "{{ .Values.workerScaling.pools.mcpBridge.memoryLimit }}",
+        "emptyDirSizeLimit": "{{ .Values.workerScaling.pools.mcpBridge.emptyDirSizeLimit }}",
+        "egressTier": "egress-external"
+      }
+    ]
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator
+  namespace: {{ .Values.namespaces.app }}
+  labels:
+    app: orchestrator
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+spec:
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+    - name: http
+      port: 8081
+      targetPort: http
+  selector:
+    app: orchestrator
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator
+  namespace: {{ .Values.namespaces.app }}
+  labels:
+    app: orchestrator
+    {{- include "secflow.commonLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.orchestrator.replicas }}
+  selector:
+    matchLabels:
+      app: orchestrator
+  template:
+    metadata:
+      labels:
+        app: orchestrator
+        {{- include "secflow.commonLabels" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: orchestrator
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "secflow.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: orchestrator
+          image: {{ include "secflow.image" (dict "root" . "repo" .Values.orchestrator.imageRepository) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: 50051
+            - name: http
+              containerPort: 8081
+          env:
+            - name: SECFLOW_ENV
+              value: {{ .Values.global.env | quote }}
+            - name: GRPC_ADDR
+              value: ":50051"
+            - name: HTTP_ADDR
+              value: ":8081"
+            - name: ORCHESTRATOR_MAX_CONCURRENT_TASKS
+              value: {{ .Values.orchestrator.maxConcurrentTasks | quote }}
+            - name: REQUIRE_WORKER_SERVICE_TOKEN
+              value: {{ if .Values.auth.requireWorkerServiceToken }}"1"{{ else }}"0"{{ end }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-db
+                  key: DATABASE_URL
+            - name: SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-auth
+                  key: SERVICE_TOKEN
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-auth
+                  key: SECRET_KEY
+            - name: LEASE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-auth
+                  key: LEASE_SECRET
+            - name: INGESTER_ADDR
+              value: {{ include "secflow.ingesterAddr" . | quote }}
+            - name: NOTIFY_ADDR
+              value: {{ include "secflow.notifyAddr" . | quote }}
+            - name: GARAGE_ENDPOINT
+              value: {{ include "secflow.garageEndpoint" . | quote }}
+            - name: GARAGE_ADMIN_URL
+              value: {{ include "secflow.garageAdminUrl" . | quote }}
+            - name: GARAGE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secflow-garage-admin
+                  key: GARAGE_ADMIN_TOKEN
+            - name: GARAGE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.garage.secretName }}
+                  key: GARAGE_ACCESS_KEY
+                  optional: true
+            - name: GARAGE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.garage.secretName }}
+                  key: GARAGE_SECRET_KEY
+                  optional: true
+            - name: SECFLOW_PUBLIC_URL
+              value: {{ .Values.global.publicUrl | quote }}
+            - name: REPO_ALLOWLIST
+              value: {{ .Values.global.repoAllowlist | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ include "secflow.otelEndpoint" . | quote }}
+            - name: WORKER_SCALER_DRIVER
+              value: {{ if eq .Values.workerScaling.mode "orchestrator" }}"k8s"{{ else }}"noop"{{ end }}
+            - name: WORKERS_NAMESPACE
+              value: {{ .Values.namespaces.workers | quote }}
+            - name: ORCHESTRATOR_INTERNAL_ADDR
+              value: {{ include "secflow.orchestratorAddr" . | quote }}
+            - name: WORKER_GARAGE_SECRET_NAME
+              value: {{ .Values.garage.secretName | quote }}
+            - name: WORKER_AUTH_SECRET_NAME
+              value: "secflow-worker-auth"
+            - name: WORKER_DB_SECRET_NAME
+              value: "secflow-db"
+            - name: WORKER_REDIS_ADDR
+              value: {{ include "secflow.redisAddr" . | quote }}
+            - name: WORKER_IMAGE_REGISTRY
+              value: {{ .Values.global.imageRegistry | quote }}
+            - name: WORKER_IMAGE_TAG
+              value: {{ .Values.global.imageTag | quote }}
+            - name: WORKER_IMAGE_PULL_POLICY
+              value: {{ .Values.global.imagePullPolicy | quote }}
+            - name: WORKER_PROVISION_TIMEOUT_SECONDS
+              value: {{ .Values.workerScaling.provisionTimeoutSeconds | quote }}
+            - name: WORKER_SCALE_WAIT_TIMEOUT_SECONDS
+              value: {{ .Values.workerScaling.scaleWaitTimeoutSeconds | quote }}
+            - name: WORKER_RECONCILE_INTERVAL_SECONDS
+              value: {{ .Values.workerScaling.reconcileIntervalSeconds | quote }}
+            - name: WORKER_IDLE_TTL_SECONDS
+              value: {{ .Values.workerScaling.idleTtlSeconds | quote }}
+            - name: WORKER_MAX_REPLICAS
+              value: {{ .Values.workerScaling.defaultMaxReplicas | quote }}
+            {{- if eq .Values.workerScaling.mode "orchestrator" }}
+            - name: WORKER_POOLS_CONFIG
+              value: /etc/secflow/worker-pools.json
+            {{- end }}
+          securityContext:
+            {{- include "secflow.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.orchestrator.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if eq .Values.workerScaling.mode "orchestrator" }}
+            - name: worker-pools
+              mountPath: /etc/secflow
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        {{- if eq .Values.workerScaling.mode "orchestrator" }}
+        - name: worker-pools
+          configMap:
+            name: secflow-worker-pools
+        {{- end }}
+{{- if .Values.orchestrator.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: orchestrator
+  namespace: {{ .Values.namespaces.app }}
+spec:
+  minAvailable: {{ .Values.orchestrator.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      app: orchestrator
+{{- end }}
+{{- if .Values.orchestrator.hpa.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: orchestrator
+  namespace: {{ .Values.namespaces.app }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: orchestrator
+  minReplicas: {{ .Values.orchestrator.hpa.minReplicas }}
+  maxReplicas: {{ .Values.orchestrator.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.orchestrator.hpa.targetCPUUtilizationPercentage }}
+{{- end }}

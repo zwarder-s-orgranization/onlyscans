@@ -1,0 +1,28 @@
+# Example workflow calling the SecFlow Composite Action via `uses:`.
+# Copy to `.github/workflows/secflow.yml` in the target repository.
+
+name: SecFlow Scan
+
+on: [push, pull_request]
+
+jobs:
+  security:
+    runs-on: self-hosted
+    steps:
+      - name: Run SecFlow Workflow
+        id: secflow
+        # Reference from this repo (or pin to a tag/branch of your org's repo):
+        uses: zwarder-s-orgranization/hz_chto_viydet/ci-integrations/github@main
+        with:
+          workflow-id: ${{ vars.SECFLOW_WORKFLOW_ID }}
+          token: ${{ secrets.SECFLOW_TOKEN }}
+          # Optional: defaults to http://edge-gateway:8080 (local Docker/K8s service domain)
+          secflow-url: ${{ vars.SECFLOW_URL || 'http://edge-gateway:8080' }}
+
+      - name: Show outputs
+        if: always()
+        run: |
+          echo "Run ID: ${{ steps.secflow.outputs.run-id }}"
+          echo "Status: ${{ steps.secflow.outputs.status }}"
+          echo "Gate:   ${{ steps.secflow.outputs.gate-status }}"
+          echo "Report: ${{ steps.secflow.outputs.report-file }}"

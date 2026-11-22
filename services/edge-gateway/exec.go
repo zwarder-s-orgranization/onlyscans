@@ -800,18 +800,24 @@ func allowed(field string, c *auth.Claims) bool {
 		return true
 	// Owner-only (never scoped tokens)
 	case "scopedTokens", "createScopedToken", "revokeScopedToken",
-		"registerMcpConnection", "updateMcpConnection", "deleteMcpConnection", "testMcpConnection":
+		"registerMcpConnection", "updateMcpConnection", "deleteMcpConnection", "testMcpConnection",
+		"approvePluginInstallation",
+		"setPluginInstallationEnabled", "deletePluginInstallation":
 		return rank >= 3
-	// Editor+ only (never scoped tokens)
+	// Editor+ only (never scoped tokens); non-DECLARATIVE installPlugin/updatePluginInstallation further gated to OWNER in resolver
 	case "secrets", "createSecret", "deleteSecret",
 		"saveWorkflow", "createWorkflow", "updateWorkflow", "deleteWorkflow",
-		"publishTemplate", "rerunFromNode", "cancelRun":
+		"publishTemplate", "rerunFromNode", "cancelRun",
+		"installPlugin", "updatePluginInstallation",
+		"testDeclarativePlugin", "saveNode", "updateSavedNode", "deleteSavedNode":
 		return rank >= 2
 	// Viewer+ only (never scoped tokens)
 	case "mcpConnections", "mcpConnectionTools",
 		"aiAuditLogs", "webhookInspectorDeliveries", "webhookInspectorEvents",
 		"generateCiConfig", "catalogs", "aiProviderStatus",
-		"pluginRegistryEvents":
+		"pluginRegistryEvents", "pluginInstallationEvents",
+		"pluginInstallations", "pluginInstallation", "pluginPresets",
+		"declarativePluginBlueprints", "savedNodes":
 		return rank >= 1
 	// Run start
 	case "startRun":

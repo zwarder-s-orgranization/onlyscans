@@ -22,6 +22,7 @@ type rawDoc struct {
 }
 
 type schema struct {
+	Defs                 map[string]schema `json:"$defs"`
 	Ref                  string            `json:"$ref"`
 	Type                 any               `json:"type"`
 	Required             []string          `json:"required"`
@@ -175,6 +176,22 @@ func Check(plugin string, params map[string]any) error {
 		return nil
 	}
 	return validate(d.Defs, plugin, params, def)
+}
+
+// CheckSchema validates params against an explicit JSON Schema document (e.g. from an external PluginManifest).
+func CheckSchema(plugin string, rawSchema []byte, params map[string]any) error {
+	trimmed := bytes.TrimSpace(rawSchema)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("{}")) {
+		return nil
+	}
+	var sch schema
+	if err := json.Unmarshal(trimmed, &sch); err != nil {
+		return fmt.Errorf("parse external param schema %s: %w", plugin, err)
+	}
+	if params == nil {
+		params = map[string]any{}
+	}
+	return validate(sch.Defs, plugin, params, sch)
 }
 
 func validate(defs map[string]schema, path string, value any, sch schema) error {

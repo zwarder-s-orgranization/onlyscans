@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { CheckCircle2, Cpu, Loader2, ShieldCheck, Sparkles } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cpu, Loader2, ShieldCheck, Sparkles } from "lucide-react";
 import type { UserRole } from "@/data/workflows-workspace-data";
+import type { AiModelOption, AiModelsProbeResponse } from "@/lib/api";
 import {
   canManageSecrets,
   type AiAuditLogRecord,
@@ -10,14 +11,15 @@ import {
   type AiProviderMode,
   type SecretRecord,
 } from "@/data/settings-data";
+import { AiModelPicker } from "./AiModelPicker";
 
 interface AiProviderTabProps {
   role: UserRole;
   config: AiProviderConfig;
   secrets: SecretRecord[];
   auditLogs: AiAuditLogRecord[];
-  onSaveConfig: (next: AiProviderConfig) => void;
-  onTestConnection: (candidate: AiProviderConfig) => Promise<void>;
+  onSaveConfig: (next: AiProviderConfig) => Promise<void>;
+  onTestConnection: (candidate: AiProviderConfig) => Promise<AiModelsProbeResponse | null>;
 }
 
 const MODE_OPTIONS: Array<{ id: AiProviderMode; label: string; hint: string }> = [
@@ -49,11 +51,29 @@ export function AiProviderTab({
   const canEdit = canManageSecrets(role);
   const [draft, setDraft] = useState<AiProviderConfig>(config);
   const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<AiModelsProbeResponse | null>(null);
+  const [testedMeta, setTestedMeta] = useState<{
+    status: AiProviderConfig["status"];
+    latencyMs: number;
+    checkedAt: string;
+  } | null>(null);
+  const [discoveredModels, setDiscoveredModels] = useState<AiModelOption[]>([]);
 
   useEffect(() => {
     setDraft(config);
+    setTestedMeta(null);
   }, [config]);
+
+  const sortedSecrets = useMemo(() => {
+    return [...secrets].sort((a, b) => {
+      const aLlm = a.binding === "ai.explain" ? 0 : a.binding === "generic" ? 1 : 2;
+      const bLlm = b.binding === "ai.explain" ? 0 : b.binding === "generic" ? 1 : 2;
+      if (aLlm !== bLlm) return aLlm - bLlm;
+      return a.name.localeCompare(b.name);
+    });
+  }, [secrets]);
 
   const totalStrippedHallucinatedCve = useMemo(
     () => auditLogs.reduce((sum, log) => sum + (Number(log.hallucinatedCve) || 0), 0),
@@ -62,36 +82,84 @@ export function AiProviderTab({
 
   const isDeterministic = draft.mode === "deterministic-only";
 
-  const handleSave = (e: FormEvent<HTMLFormElement>) => {
+  const handleModeChange = (nextMode: AiProviderMode) => {
+    setTestResult(null);
+    setFormError(null);
+    setDraft((prev) => {
+      let nextUrl = prev.endpointUrl;
+      if (nextMode === "local-ollama" && (!nextUrl.trim() || nextUrl.trim() === "local")) {
+        nextUrl = "http://ollama:11434";
+      } else if (nextMode === "openai-compatible" && nextUrl.trim() === "local") {
+        nextUrl = "";
+      }
+      return { ...prev, mode: nextMode, endpointUrl: nextUrl };
+    });
+  };
+
+  const handleSave = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!canEdit) return;
-    if (!isDeterministic && !draft.endpointUrl.trim().startsWith("http")) {
+    if (!canEdit || saving) return;
+    if (!isDeterministic && !/^https?:\/\//i.test(draft.endpointUrl.trim())) {
       setFormError("Укажите корректный URL эндпоинта (http:// или https://).");
       return;
     }
     if (!isDeterministic && draft.model.trim().length < 2) {
-      setFormError("Укажите идентификатор модели LLM.");
+      setFormError("Выберите или введите идентификатор модели LLM.");
       return;
     }
     setFormError(null);
-    onSaveConfig({
-      ...draft,
-      endpointUrl: draft.endpointUrl.trim(),
-      model: draft.model.trim(),
-      status: isDeterministic ? "DISABLED" : draft.status === "DISABLED" ? "HEALTHY" : draft.status,
-    });
+    setSaving(true);
+    try {
+      await onSaveConfig({
+        ...draft,
+        endpointUrl: draft.endpointUrl.trim(),
+        model: draft.model.trim(),
+        status: isDeterministic ? "DISABLED" : draft.status === "DISABLED" ? "HEALTHY" : draft.status,
+      });
+    } catch (err: unknown) {
+      setFormError(err instanceof Error ? err.message : "Не удалось сохранить настройки AI-провайдера.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleTest = async () => {
     if (testing) return;
+    if (!isDeterministic && !/^https?:\/\//i.test(draft.endpointUrl.trim())) {
+      setFormError("Укажите корректный URL эндпоинта (http:// или https://) перед проверкой.");
+      return;
+    }
     setFormError(null);
     setTesting(true);
     try {
-      await onTestConnection(draft);
+      const res = await onTestConnection(draft);
+      if (res) {
+        setTestResult(res);
+        setTestedMeta({
+          status:
+            draft.mode === "deterministic-only"
+              ? "DISABLED"
+              : res.ok
+                ? "HEALTHY"
+                : "DEGRADED",
+          latencyMs: res.latencyMs || 0,
+          checkedAt: new Date().toLocaleString("ru-RU"),
+        });
+        if (res.models && res.models.length > 0) {
+          setDiscoveredModels(res.models);
+        }
+        if (res.suggestedBaseUrl && res.ok) {
+          setDraft((prev) => ({ ...prev, endpointUrl: res.suggestedBaseUrl ?? prev.endpointUrl }));
+        }
+      }
     } finally {
       setTesting(false);
     }
   };
+
+  const badgeStatus = testedMeta?.status ?? config.status;
+  const badgeLatencyMs = testedMeta?.latencyMs ?? config.lastLatencyMs;
+  const displayCheckedAt = testedMeta?.checkedAt ?? config.lastCheckedAt;
 
   return (
     <div className="space-y-8">
@@ -109,19 +177,19 @@ export function AiProviderTab({
 
         <span
           className={`fm-tnum inline-flex shrink-0 items-center gap-1.5 self-start whitespace-nowrap rounded-full px-3 py-1.5 text-[12px] font-semibold ${
-            config.status === "HEALTHY"
+            badgeStatus === "HEALTHY"
               ? "bg-[#c8f0d8]/75 text-[#0f5132]"
-              : config.status === "DISABLED"
+              : badgeStatus === "DISABLED"
                 ? "bg-[#e9ecef] text-[#495057]"
                 : "bg-[#fff3c4] text-[#664d03]"
           }`}
         >
           <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-          {config.status === "HEALTHY"
-            ? config.lastLatencyMs > 0
-              ? `Подключён · ${config.lastLatencyMs} мс`
+          {badgeStatus === "HEALTHY"
+            ? badgeLatencyMs > 0
+              ? `Подключён · ${badgeLatencyMs} мс`
               : "Подключён"
-            : config.status === "DISABLED"
+            : badgeStatus === "DISABLED"
               ? "Deterministic fallback"
               : "Требуется проверка"}
         </span>
@@ -152,7 +220,7 @@ export function AiProviderTab({
                       type="radio"
                       name="ai-mode"
                       checked={active}
-                      onChange={() => setDraft((prev) => ({ ...prev, mode: opt.id }))}
+                      onChange={() => handleModeChange(opt.id)}
                       className="h-4 w-4 accent-[#0080ff]"
                     />
                     <span className="text-[13px] font-semibold text-[#000000]">{opt.label}</span>
@@ -167,28 +235,22 @@ export function AiProviderTab({
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor="ai-endpoint" className="block text-[12px] font-medium text-[#636f7b]">
-              Endpoint URL
+              Endpoint URL (base_url)
             </label>
             <input
               id="ai-endpoint"
               type="url"
+              placeholder={
+                draft.mode === "local-ollama"
+                  ? "http://ollama:11434"
+                  : "https://openrouter.ai/api/v1 или https://llm.skbkit.ru/v1"
+              }
               disabled={!canEdit || isDeterministic}
               value={draft.endpointUrl}
-              onChange={(e) => setDraft((prev) => ({ ...prev, endpointUrl: e.target.value }))}
-              className="fm-focus fm-mono mt-1.5 min-h-[42px] w-full rounded-[10px] border border-[#8c9baa] bg-[#ffffff] px-3 py-2 text-[16px] text-[#000000] disabled:bg-[#f8fafc] disabled:text-[#636f7b] sm:text-[13.5px]"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="ai-model" className="block text-[12px] font-medium text-[#636f7b]">
-              Модель
-            </label>
-            <input
-              id="ai-model"
-              type="text"
-              disabled={!canEdit || isDeterministic}
-              value={draft.model}
-              onChange={(e) => setDraft((prev) => ({ ...prev, model: e.target.value }))}
+              onChange={(e) => {
+                setTestResult(null);
+                setDraft((prev) => ({ ...prev, endpointUrl: e.target.value }));
+              }}
               className="fm-focus fm-mono mt-1.5 min-h-[42px] w-full rounded-[10px] border border-[#8c9baa] bg-[#ffffff] px-3 py-2 text-[16px] text-[#000000] disabled:bg-[#f8fafc] disabled:text-[#636f7b] sm:text-[13.5px]"
             />
           </div>
@@ -201,16 +263,46 @@ export function AiProviderTab({
               id="ai-secret"
               disabled={!canEdit || isDeterministic}
               value={draft.secretRef}
-              onChange={(e) => setDraft((prev) => ({ ...prev, secretRef: e.target.value }))}
+              onChange={(e) => {
+                setTestResult(null);
+                setDraft((prev) => ({ ...prev, secretRef: e.target.value }));
+              }}
               className="fm-focus fm-mono fm-select mt-1.5 min-h-[42px] w-full rounded-[10px] border border-[#8c9baa] bg-[#ffffff] px-3 py-2 text-[16px] text-[#000000] disabled:bg-[#f8fafc] disabled:text-[#636f7b] sm:text-[13.5px]"
             >
-              <option value="">Без ключа (локальный инстанс)</option>
-              {secrets.map((sec) => (
+              <option value="">Без ключа (публичный / локальный инстанс)</option>
+              {sortedSecrets.map((sec) => (
                 <option key={sec.id} value={sec.id}>
                   {sec.name} ({sec.maskedValue})
                 </option>
               ))}
             </select>
+          </div>
+
+          <div>
+            <label htmlFor="ai-model" className="block text-[12px] font-medium text-[#636f7b]">
+              Модель
+            </label>
+            <div className="mt-1.5">
+              <AiModelPicker
+                id="ai-model"
+                value={draft.model}
+                onChange={(model) => setDraft((prev) => ({ ...prev, model }))}
+                baseUrl={draft.endpointUrl}
+                secretRef={draft.secretRef}
+                mode={draft.mode}
+                disabled={!canEdit || isDeterministic}
+                externalModels={discoveredModels}
+                onModelsLoaded={(models) => {
+                  setDiscoveredModels(models);
+                  if (!draft.model.trim() && models.length > 0) {
+                    setDraft((prev) => (prev.model.trim() ? prev : { ...prev, model: models[0].id }));
+                  }
+                }}
+                onSuggestedBaseUrl={(url) =>
+                  setDraft((prev) => ({ ...prev, endpointUrl: url }))
+                }
+              />
+            </div>
           </div>
 
           <div>
@@ -221,13 +313,13 @@ export function AiProviderTab({
               id="ai-timeout"
               type="number"
               min={5}
-              max={120}
+              max={180}
               disabled={!canEdit || isDeterministic}
               value={draft.timeoutSec}
               onChange={(e) =>
                 setDraft((prev) => ({
                   ...prev,
-                  timeoutSec: Math.max(5, Math.min(120, Number(e.target.value) || 25)),
+                  timeoutSec: Math.max(5, Math.min(180, Number(e.target.value) || 60)),
                 }))
               }
               className="fm-focus fm-tnum mt-1.5 min-h-[42px] w-full rounded-[10px] border border-[#8c9baa] bg-[#ffffff] px-3 py-2 text-[16px] text-[#000000] disabled:bg-[#f8fafc] disabled:text-[#636f7b] sm:text-[13.5px]"
@@ -278,6 +370,45 @@ export function AiProviderTab({
           </label>
         </div>
 
+        {testResult && (
+          <div
+            role={testResult.ok ? "status" : "alert"}
+            className={`rounded-[12px] border px-3.5 py-2.5 text-[12.5px] ${
+              testResult.ok
+                ? "border-[#9ad8b3] bg-[#f2fbf5] text-[#0f5132]"
+                : "border-[#e5a3b3] bg-[#fff5f7] text-[#842029]"
+            }`}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              {testResult.ok ? (
+                <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+              ) : (
+                <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+              )}
+              <span className="font-semibold">
+                {testResult.ok
+                  ? `Подключение успешно (${testResult.latencyMs} мс · моделей: ${testResult.models.length})`
+                  : "Ошибка подключения к AI-провайдеру"}
+              </span>
+              {!testResult.ok && testResult.statusCode > 0 && (
+                <span className="fm-mono fm-tnum shrink-0 whitespace-nowrap rounded-full bg-[#ffd6e0] px-2 py-0.5 text-[11px] font-semibold text-[#842029]">
+                  HTTP {testResult.statusCode}
+                </span>
+              )}
+              {testResult.ok && testResult.modelFound === false && draft.model.trim() !== "" && (
+                <span className="rounded-full bg-[#fff3c4] px-2 py-0.5 text-[11px] font-semibold text-[#664d03]">
+                  Модель «{draft.model.trim()}» не найдена в списке эндпоинта
+                </span>
+              )}
+            </div>
+            {!testResult.ok && testResult.error && (
+              <p className="fm-mono mt-1.5 [overflow-wrap:anywhere] text-[12px]">
+                {testResult.error}
+              </p>
+            )}
+          </div>
+        )}
+
         {formError && (
           <p role="alert" className="text-[13px] font-medium text-[#b42318]">
             {formError}
@@ -286,7 +417,7 @@ export function AiProviderTab({
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
           <p className="fm-tnum text-[12px] text-[#636f7b]">
-            Последняя проверка: {config.lastCheckedAt}
+            Последняя проверка: {displayCheckedAt}
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -310,10 +441,17 @@ export function AiProviderTab({
 
             <button
               type="submit"
-              disabled={!canEdit}
-              className="fm-btn-ink fm-focus inline-flex min-h-[40px] cursor-pointer items-center px-5 text-[13px] font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!canEdit || saving}
+              className="fm-btn-ink fm-focus inline-flex min-h-[40px] cursor-pointer items-center gap-1.5 px-5 text-[13px] font-semibold disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Сохранить
+              {saving ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  Сохранение…
+                </>
+              ) : (
+                "Сохранить"
+              )}
             </button>
           </div>
         </div>

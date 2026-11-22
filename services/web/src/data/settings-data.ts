@@ -5,7 +5,8 @@ export type SettingsTabId =
   | "secrets"
   | "tokens"
   | "ai"
-  | "mcp";
+  | "mcp"
+  | "plugins";
 
 export interface SettingsTabMeta {
   id: SettingsTabId;
@@ -44,6 +45,13 @@ export const SETTINGS_TABS: SettingsTabMeta[] = [
     label: "MCP-подключения",
     shortLabel: "MCP",
     description: "Регистрация внешних Outbound MCP-подключений и инспекция tools",
+  },
+  {
+    id: "plugins",
+    label: "Плагины",
+    shortLabel: "Плагины",
+    description:
+      "Управляемые sandbox-установки (secflow-sandbox): пресеты, OCI-образы, одобрение и диагностика",
   },
 ];
 
@@ -196,6 +204,13 @@ export const RBAC_MATRIX: RbacCapabilityRow[] = [
   {
     area: "MCP-подключения",
     detail: "Регистрация, изменение, тест и удаление внешних MCP-подключений",
+    viewer: "readonly",
+    editor: "readonly",
+    owner: "allow",
+  },
+  {
+    area: "Плагины (secflow-sandbox)",
+    detail: "Установка пресетов/OCI-образов, одобрение манифестов, включение/отключение и удаление",
     viewer: "readonly",
     editor: "readonly",
     owner: "allow",

@@ -58,7 +58,15 @@ func main() {
 	}()
 	go func() {
 		manifests := notifyManifests()
-		if err := workerclient.Run(ctx, envutil.Get("ORCHESTRATOR_ADDR", "orchestrator:50051"), "notify-service", manifests, deliver); err != nil && ctx.Err() == nil {
+		workerID := envutil.Get("WORKER_INSTANCE_ID", "")
+		if workerID == "" {
+			if host, hErr := os.Hostname(); hErr == nil && host != "" {
+				workerID = "notify-service-" + host
+			} else {
+				workerID = "notify-service"
+			}
+		}
+		if err := workerclient.Run(ctx, envutil.Get("ORCHESTRATOR_ADDR", "orchestrator:50051"), workerID, manifests, deliver); err != nil && ctx.Err() == nil {
 			slog.Error("notify worker stopped", "err", err)
 		}
 	}()

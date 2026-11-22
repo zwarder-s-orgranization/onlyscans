@@ -1,0 +1,36 @@
+OnlyScans has been deployed!
+
+Namespaces:
+  - App plane:           {{ .Values.namespaces.app }}
+  - Workers plane:       {{ .Values.namespaces.workers }}
+  - Sandbox plugins:     {{ .Values.namespaces.sandbox }}
+  - Data / System plane: {{ .Values.namespaces.system }}
+{{- if .Values.observability.enabled }}
+  - Observability:       {{ .Values.namespaces.observability }}
+{{- end }}
+
+Dynamic Worker Scaling:
+  - Mode: {{ .Values.workerScaling.mode }}
+{{- if eq .Values.workerScaling.mode "orchestrator" }}
+  - Orchestrator automatically creates and scales worker Deployments in {{ .Values.namespaces.workers }} via the Kubernetes API
+    and splits parallel tasks across replicas (scale-to-zero after {{ .Values.workerScaling.idleTtlSeconds }}s idle for pure analyzers).
+{{- end }}
+
+Verify rollout:
+  kubectl -n {{ .Values.namespaces.system }} wait --for=condition=complete job/garage-init --timeout=180s
+  kubectl -n {{ .Values.namespaces.app }} get pods
+  kubectl -n {{ .Values.namespaces.workers }} get pods,deployments
+
+Access OnlyScans:
+{{- if .Values.ingress.enabled }}
+  URL: {{ if .Values.ingress.tls.enabled }}https{{ else }}http{{ end }}://{{ .Values.ingress.host }}
+{{- else if eq (.Values.web.service.type | default "ClusterIP") "NodePort" }}
+  Web UI NodePort:       {{ .Values.web.service.nodePort | default "auto" }}
+  Edge Gateway NodePort: {{ .Values.edgeGateway.service.nodePort | default "auto" }}
+{{- if and .Values.observability.enabled (eq (.Values.observability.grafana.service.type | default "ClusterIP") "NodePort") }}
+  Grafana NodePort:      {{ .Values.observability.grafana.service.nodePort | default "auto" }}
+{{- end }}
+{{- else }}
+  kubectl -n {{ .Values.namespaces.app }} port-forward svc/web 3000:3000
+  kubectl -n {{ .Values.namespaces.app }} port-forward svc/edge-gateway 8080:8080
+{{- end }}
